@@ -1,0 +1,57 @@
+{
+  "name": "codesandbox-sync",
+  "version": "1.0.0",
+  "description": "Zip a local project to a CodeSandbox devbox and back — as a CLI and as an MCP server.",
+  "license": "MIT",
+  "author": "Bhanu Bandaranayake",
+  "keywords": [
+    "codesandbox",
+    "devbox",
+    "mcp",
+    "model-context-protocol",
+    "sync",
+    "zip",
+    "upload"
+  ],
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "csb-sync": "dist/bin.js",
+    "codesandbox-sync-mcp": "dist/mcp.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "upload": "tsc && node dist/upload.js",
+    "download": "tsc && node dist/download.js",
+    "verify": "tsc && node dist/verify.js",
+    "start": "npm run upload",
+    "mcp": "tsc && node dist/mcp.js",
+    "postbuild": "chmod +x dist/bin.js dist/mcp.js",
+    "test": "tsc && node --test test/*.test.mjs"
+  },
+  "files": [
+    "dist",
+    "apps.example.json",
+    ".env.example",
+    "README.md",
+    "SETUP.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@codesandbox/sdk": "^0.5.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "adm-zip": "^0.5.16",
+    "archiver": "^6.0.2",
+    "dotenv": "^16.4.5",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.7",
+    "@types/archiver": "^6.0.2",
+    "@types/node": "^20.11.30",
+    "typescript": "^5.4.5"
+  }
+}

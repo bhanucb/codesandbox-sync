@@ -1,0 +1,47 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment variables
+.env
+.env.local
+output/
+.env.*.local
+
+# Editor / AI-assistant local state (no tool is privileged here)
+.vscode/
+.idea/
+.cursor/
+.cursorignore
+.cursorrules
+.claude/
+.aider*
+.windsurf*
+.continue/
+.mcp.json
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Temporary files
+*.tmp
+*.temp
+
+# Output directory (generated ZIPs)
+output/
+
+# Local app registry (machine-specific paths)
+apps.json
+apps.json.*

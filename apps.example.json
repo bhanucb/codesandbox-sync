@@ -1,0 +1,21 @@
+{
+  "defaults": {
+    "devboxId": "your-devbox-id",
+    "remoteRoot": "/project/sandbox/apps",
+    "exclude": ["dist", "coverage"]
+  },
+  "apps": {
+    "my-app": {
+      "sourceDir": "/absolute/path/to/my-app",
+      "remoteDir": "/project/sandbox/apps/my-app",
+      "downloadDir": "/absolute/path/to/my-app"
+    },
+    "other-app": {
+      "sourceDir": "/absolute/path/to/other-app",
+      "remoteDir": "/project/sandbox/apps/other-app",
+      "downloadDir": "/absolute/path/to/other-app-restored",
+      "devboxId": "a-different-devbox",
+      "exclude": ["fixtures/large"]
+    }
+  }
+}
