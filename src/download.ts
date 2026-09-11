@@ -3,7 +3,7 @@ import { downloadApp } from "./sync.js";
 
 async function main(): Promise<void> {
   const app = resolveCliApp();
-  console.log(`App: ${app.name} (devbox ${app.devboxId})`);
+  console.log(`App: ${app.name} (${app.backend})`);
   console.log(`  Remote: ${app.remoteDir}`);
   console.log(`  Target: ${app.downloadDir ?? "(not configured)"}`);
   await downloadApp(app, { log: (m) => console.log(m) });

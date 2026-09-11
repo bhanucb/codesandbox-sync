@@ -1,7 +1,12 @@
 # codesandbox-sync
 
-Zips a local project, uploads it to a [CodeSandbox](https://codesandbox.io)
-devbox, and downloads it back. Works as a CLI (`csb-sync`) and as an MCP server.
+Zips a local project, uploads it to a remote, and downloads it back. Works as a
+CLI (`csb-sync`) and as an MCP server.
+
+Two backends: a [CodeSandbox](https://codesandbox.io) devbox (the default), or a
+[Cloudflare R2](https://developers.cloudflare.com/r2/) bucket. R2 is the better
+choice where a devbox is awkward to reach — it is plain object storage behind
+your own account, with no machine to boot and no post-write settling.
 
 Agent setting this up? Follow [SETUP.md](SETUP.md).
 
@@ -20,9 +25,19 @@ npm install && npm run build && npm link
 (`cp .env.example .env.local`). Real env vars win.
 
 ```env
-CSB_API_KEY=csb_v1_...   # required — get one at https://codesandbox.io/t/api
+# codesandbox backend
+CSB_API_KEY=csb_v1_...   # get one at https://codesandbox.io/t/api
 DEVBOX_ID=abc123         # fallback devbox for apps that don't set their own
+
+# r2 backend
+R2_ACCESS_KEY_ID=...     # R2 API token, scoped Object Read & Write
+R2_SECRET_ACCESS_KEY=...
+R2_BUCKET=project-zips   # may live in apps.json instead
+R2_ACCOUNT_ID=...        # may live in apps.json instead
 ```
+
+R2 credentials are never read from `apps.json` — only the bucket and account id
+are, so the registry stays safe to commit.
 
 **Projects** — `apps.json` (`cp apps.example.json apps.json`):
 
@@ -42,17 +57,27 @@ DEVBOX_ID=abc123         # fallback devbox for apps that don't set their own
 | Field | Required | Meaning |
 | --- | --- | --- |
 | `sourceDir` | yes | Directory to zip and upload |
-| `remoteDir` | yes | Devbox directory the ZIPs land in |
-| `devboxId` | yes* | Which devbox to use |
+| `remoteDir` | devbox only | Devbox directory the ZIPs land in; on R2, the key prefix (default: the app name) |
+| `devboxId` | devbox only* | Which devbox to use |
+| `backend` | no | `codesandbox` (default) or `r2` |
 | `downloadDir` | for `download` | Directory that `download` **resets** and extracts into |
 | `exclude` | no | Extra paths kept out of the ZIP |
 
 \* A devbox id is mandatory and never defaulted. It comes from the app's
 `devboxId`, `defaults.devboxId`, `DEVBOX_ID`, or `--devbox`. The id is the last
-part of the devbox URL: `https://codesandbox.io/p/devbox/<devbox-id>`.
+part of the devbox URL: `https://codesandbox.io/p/devbox/<devbox-id>`. The R2
+backend needs none of this.
 
-`defaults` also accepts `remoteRoot`, `exclude`, and `preserveNodeModules`.
-`CSB_SYNC_CONFIG` points at a different registry file.
+The backend resolves in this order: `--backend`, the app's `backend`,
+`defaults.backend`, `SYNC_BACKEND`, then `codesandbox`. So you can move one app
+at a time, or try a run against R2 without editing anything:
+
+```bash
+csb-sync upload --app my-app --backend r2
+```
+
+`defaults` also accepts `remoteRoot`, `backend`, `r2`, `exclude`, and
+`preserveNodeModules`. `CSB_SYNC_CONFIG` points at a different registry file.
 
 ## CLI
 
@@ -65,7 +90,7 @@ csb-sync apps
 ```
 
 Target order: `--source`, `--app`, current directory, then `APP_NAME`.
-Overrides for one run: `--remote`, `--to`, `--devbox`.
+Overrides for one run: `--remote`, `--to`, `--devbox`, `--backend`.
 
 Ad-hoc, nothing registered:
 
@@ -96,7 +121,7 @@ Any stdio MCP client. The path must be absolute.
 | --- | --- |
 | `list_apps` | — |
 | `get_app` | `app_name?`, `path?` |
-| `add_app` | `name`, `source_dir`, `remote_dir?`, `download_dir?`, `devbox_id?`, `exclude?` |
+| `add_app` | `name`, `source_dir`, `remote_dir?`, `download_dir?`, `devbox_id?`, `backend?`, `exclude?` |
 | `update_app` | `app_name` + any field (`null` clears) |
 | `remove_app` | `app_name` |
 | `upload_app` | `app_name?`, `path?`, `dry_run?` |
@@ -122,8 +147,14 @@ excluded survives, plus `.git/info/exclude` — if it was never in the ZIP,
 deleting it would destroy something no download can restore. Everything else is
 replaced by the ZIP. `PRESERVE_NODE_MODULES=false` opts out for node_modules.
 
-**Uploads keep 3 ZIPs on the devbox and 2 locally**, and are verified by size
-with retries.
+**Uploads keep 3 ZIPs on the remote and 2 locally**, and are verified by size.
+The devbox backend retries that check, because a devbox write can report success
+before the bytes land; R2 verifies with a single `HEAD`.
+
+**Behind a corporate proxy**, set `HTTPS_PROXY` — the AWS SDK does not read it
+the way `curl` and `fetch` do, so the R2 client wires the agent in explicitly.
+If the proxy intercepts TLS, also set `NODE_EXTRA_CA_CERTS` to the corporate
+root CA, or every request fails certificate validation.
 
 ## Development
 
@@ -134,6 +165,11 @@ npm test
 
 `src/sync.ts` holds upload/download/list; `bin.ts` (CLI) and `mcp.ts` (MCP
 server) are thin wrappers over it. The CLI imports nothing from the MCP SDK.
+
+`src/storage/` is the backend seam: `types.ts` declares the five operations
+syncing needs (list, put, get, remove, close), and `codesandbox.ts` and `r2.ts`
+implement them. `sync.ts` knows nothing about devboxes or S3 — adding a third
+backend means adding one file there and a name to `BackendKind`.
 
 ## License
 

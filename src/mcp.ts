@@ -75,9 +75,10 @@ function describe(app: ResolvedApp): Record<string, unknown> {
   return {
     name: app.name,
     sourceDir: app.sourceDir,
+    backend: app.backend,
     remoteDir: app.remoteDir,
     downloadDir: app.downloadDir ?? null,
-    devboxId: app.devboxId,
+    devboxId: app.devboxId ?? null,
     exclude: app.exclude,
     sourceExists: fs.existsSync(app.sourceDir),
   };
@@ -106,7 +107,7 @@ server.registerTool(
   {
     title: "List configured apps",
     description:
-      "List every app configured for CodeSandbox sync, with its local source directory, remote devbox directory, and download target.",
+      "List every app configured for syncing, with its storage backend, local source directory, remote directory or key prefix, and download target.",
     inputSchema: {},
     annotations: { readOnlyHint: true },
   },
@@ -133,7 +134,7 @@ server.registerTool(
   {
     title: "Get app config",
     description:
-      "Show the full resolved configuration for one app, including effective ZIP exclude patterns and devbox id.",
+      "Show the full resolved configuration for one app, including its backend, effective ZIP exclude patterns and devbox id.",
     inputSchema: appSelector,
     annotations: { readOnlyHint: true },
   },
@@ -152,16 +153,23 @@ server.registerTool(
   {
     title: "Add app",
     description:
-      "Register a new app for syncing. remote_dir is required unless defaults.remoteRoot is set in apps.json. The app needs a devbox id from devbox_id, defaults.devboxId or DEVBOX_ID.",
+      "Register a new app for syncing. On the codesandbox backend, remote_dir is required unless defaults.remoteRoot is set in apps.json, and a devbox id must come from devbox_id, defaults.devboxId or DEVBOX_ID. On the r2 backend, remote_dir is the object key prefix and defaults to the app name.",
     inputSchema: {
       name: z.string().describe("App name (letters, numbers, hyphens, underscores)"),
       source_dir: z.string().describe("Absolute path to the local project directory"),
-      remote_dir: z.string().optional().describe("Devbox directory for uploaded ZIPs"),
+      remote_dir: z
+        .string()
+        .optional()
+        .describe("Devbox directory for uploaded ZIPs, or the R2 key prefix"),
+      backend: z
+        .enum(["codesandbox", "r2"])
+        .optional()
+        .describe("Storage backend for this app (default: defaults.backend, else codesandbox)"),
       download_dir: z
         .string()
         .optional()
         .describe("Local directory that download_app resets and extracts into"),
-      devbox_id: z.string().optional().describe("Per-app devbox id override"),
+      devbox_id: z.string().optional().describe("Per-app devbox id override (codesandbox backend only)"),
       exclude: z
         .array(z.string())
         .optional()
@@ -175,6 +183,7 @@ server.registerTool(
         remoteDir: args.remote_dir,
         downloadDir: args.download_dir,
         devboxId: args.devbox_id,
+        backend: args.backend,
         exclude: args.exclude,
       });
       return ok(`✅ Added app "${app.name}" to ${configPath()}:`, describe(app));
@@ -196,6 +205,7 @@ server.registerTool(
       remote_dir: z.string().optional(),
       download_dir: z.string().nullable().optional(),
       devbox_id: z.string().nullable().optional(),
+      backend: z.enum(["codesandbox", "r2"]).nullable().optional(),
       exclude: z.array(z.string()).nullable().optional(),
     },
   },
@@ -206,6 +216,7 @@ server.registerTool(
         remoteDir: args.remote_dir,
         downloadDir: args.download_dir,
         devboxId: args.devbox_id,
+        backend: args.backend,
         exclude: args.exclude,
       });
       return ok(`✅ Updated app "${app.name}":`, describe(app));
@@ -241,15 +252,15 @@ server.registerTool(
 server.registerTool(
   "upload_app",
   {
-    title: "Upload app to devbox",
+    title: "Upload app to remote",
     description:
-      "ZIP an app's source directory (excluding node_modules, .next and configured excludes) and upload it to its CodeSandbox devbox, verifying the transfer and pruning old remote ZIPs. Use this when work on a project is finished and should be pushed to the sandbox.",
+      "ZIP an app's source directory (excluding node_modules, .next and configured excludes) and upload it to its configured backend (a CodeSandbox devbox or a Cloudflare R2 bucket), verifying the transfer and pruning old remote ZIPs. Use this when work on a project is finished and should be pushed to the remote.",
     inputSchema: {
       ...appSelector,
       dry_run: z
         .boolean()
         .optional()
-        .describe("Create the ZIP and report its size without connecting to the devbox"),
+        .describe("Create the ZIP and report its size without connecting to the remote"),
     },
   },
   async ({ app_name, path: pathHint, dry_run }) => {
@@ -275,9 +286,9 @@ server.registerTool(
 server.registerTool(
   "download_app",
   {
-    title: "Download app from devbox",
+    title: "Download app from remote",
     description:
-      "Download the newest ZIP from an app's devbox directory and extract it into the app's download_dir. DESTRUCTIVE: download_dir is wiped first. Anything the upload excludes is preserved (node_modules, build output, assistant/editor state), plus .git/info/exclude. Requires confirm: true.",
+      "Download the newest ZIP from an app's configured backend and extract it into the app's download_dir. DESTRUCTIVE: download_dir is wiped first. Anything the upload excludes is preserved (node_modules, build output, assistant/editor state), plus .git/info/exclude. Requires confirm: true.",
     inputSchema: {
       ...appSelector,
       confirm: z
@@ -318,7 +329,7 @@ server.registerTool(
   {
     title: "List remote ZIPs",
     description:
-      "List the ZIP files currently present in an app's devbox directory, newest first.",
+      "List the ZIP files currently present in an app's configured backend, newest first.",
     inputSchema: appSelector,
     annotations: { readOnlyHint: true },
   },
@@ -333,7 +344,7 @@ server.registerTool(
     try {
       const zips = await listRemoteZips(app, { log });
       return ok(
-        `${zips.length} ZIP(s) in ${app.remoteDir} on devbox ${app.devboxId}:`,
+        `${zips.length} ZIP(s) for "${app.name}" (${app.backend}):`,
         zips.map((z) => ({
           name: z.name,
           sizeMb: (z.size / (1024 * 1024)).toFixed(2),

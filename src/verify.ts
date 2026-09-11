@@ -3,9 +3,8 @@ import { listRemoteZips } from "./sync.js";
 
 async function main(): Promise<void> {
   const app = resolveCliApp();
-  console.log(`App: ${app.name} (devbox ${app.devboxId})`);
+  console.log(`App: ${app.name} (${app.backend})`);
   await listRemoteZips(app, { log: (m) => console.log(m) });
-  console.log(`\n💡 Open: https://codesandbox.io/p/devbox/${app.devboxId}`);
 }
 
 main().catch((error) => {

@@ -1,7 +1,12 @@
 {
   "defaults": {
+    "backend": "codesandbox",
     "devboxId": "your-devbox-id",
     "remoteRoot": "/project/sandbox/apps",
+    "r2": {
+      "bucket": "project-zips",
+      "accountId": "your-cloudflare-account-id"
+    },
     "exclude": ["dist", "coverage"]
   },
   "apps": {
@@ -16,6 +21,11 @@
       "downloadDir": "/absolute/path/to/other-app-restored",
       "devboxId": "a-different-devbox",
       "exclude": ["fixtures/large"]
+    },
+    "r2-app": {
+      "sourceDir": "/absolute/path/to/r2-app",
+      "downloadDir": "/absolute/path/to/r2-app",
+      "backend": "r2"
     }
   }
 }

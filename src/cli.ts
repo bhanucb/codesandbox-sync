@@ -4,6 +4,7 @@ import {
   resolveApp,
   sanitizeAppName,
   toResolvedApp,
+  type BackendOverride,
   type ResolvedApp,
 } from "./config.js";
 import { loadEnv } from "./paths.js";
@@ -46,10 +47,11 @@ function legacyEnvApp(): ResolvedApp | null {
 export function resolveCliApp(argv: string[] = process.argv.slice(2)): ResolvedApp {
   loadEnv();
   const config = loadConfig();
+  const backend = parseBackendFlag(flagValue(argv, "--backend"));
 
   const explicit = flagValue(argv, "--app");
   if (explicit) {
-    return resolveApp({ appName: explicit, config });
+    return resolveApp({ appName: explicit, config, backend });
   }
 
   const envName = process.env.APP_NAME
@@ -57,7 +59,7 @@ export function resolveCliApp(argv: string[] = process.argv.slice(2)): ResolvedA
     : undefined;
   if (envName) {
     if (config.apps[envName]) {
-      return resolveApp({ appName: envName, config });
+      return resolveApp({ appName: envName, config, backend });
     }
     const legacy = legacyEnvApp();
     if (legacy) {
@@ -68,5 +70,16 @@ export function resolveCliApp(argv: string[] = process.argv.slice(2)): ResolvedA
     }
   }
 
-  return resolveApp({ config });
+  return resolveApp({ config, backend });
+}
+
+/** `--backend r2` overrides apps.json for a single run, for testing a cutover. */
+function parseBackendFlag(value: string | undefined): BackendOverride {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value !== "codesandbox" && value !== "r2") {
+    throw new Error(`--backend must be "codesandbox" or "r2" (got "${value}")`);
+  }
+  return value;
 }

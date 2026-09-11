@@ -31,7 +31,19 @@ All tests must pass.
 cp .env.example .env.local
 ```
 
-Set `CSB_API_KEY`. Optionally set `DEVBOX_ID` as the default devbox.
+Ask which backend this install uses.
+
+For the **codesandbox** backend (the default): set `CSB_API_KEY`, and
+optionally `DEVBOX_ID` as the default devbox.
+
+For the **r2** backend: set `SYNC_BACKEND=r2`, `R2_ACCESS_KEY_ID`,
+`R2_SECRET_ACCESS_KEY`, and — here or under `defaults.r2` in `apps.json` —
+`R2_BUCKET` and `R2_ACCOUNT_ID`. The credentials come from an R2 API token
+scoped to that one bucket with Object Read & Write; ask the user to create it
+and paste the values themselves rather than fetching them for them.
+
+If the machine sits behind a corporate proxy, also set `HTTPS_PROXY`, and
+`NODE_EXTRA_CA_CERTS` when that proxy intercepts TLS.
 
 Never print, commit, or transmit the token. `.env.local` is gitignored; the file
 is optional if the user prefers real environment variables.
@@ -77,16 +89,18 @@ cd /tmp && csb-sync --help
 
 If `npm link` fails on permissions, report it. Do not use `sudo`.
 
-## 5. Check it reaches the devbox
+## 5. Check it reaches the remote
 
 ```bash
 csb-sync upload --app <name> --dry-run   # zips only, no network
 csb-sync verify --app <name>             # lists remote ZIPs, changes nothing
 ```
 
-An auth error means the token is wrong. Do **not** run a real upload or
-download as part of setup — uploads write to a shared devbox, downloads reset a
-local directory.
+`verify` is the first call that touches the network, so it is where a blocked
+endpoint, a missing proxy setting, or an intercepted certificate will surface.
+An auth error means the token or R2 key is wrong. Do **not** run a real upload
+or download as part of setup — uploads write to a shared remote, downloads reset
+a local directory.
 
 ## 6. Register the MCP server
 
@@ -158,6 +172,10 @@ other edits the registry.
 | --- | --- |
 | `No devbox id for "<app>"` | No `devboxId`, `defaults.devboxId`, or `DEVBOX_ID` |
 | `Missing CodeSandbox token` | `CSB_API_KEY` not set |
+| `uses the r2 backend but is missing: …` | Named R2 variables not set in `.env.local` |
+| `SYNC_BACKEND must be one of: …` | Typo in `SYNC_BACKEND`, `backend`, or `--backend` |
+| R2 request fails with a certificate error | Proxy intercepts TLS — set `NODE_EXTRA_CA_CERTS` |
+| R2 request hangs or times out | Egress needs a proxy — set `HTTPS_PROXY` |
 | `No remote directory for "<app>"` | Pass `remoteDir`, or set `defaults.remoteRoot` |
 | `No configured app matches path …` | Run from inside a registered `sourceDir`, or pass `--app` |
 | `Unknown app "x"` | Not registered — `csb-sync apps` lists valid names |

@@ -3,7 +3,7 @@ import { uploadApp } from "./sync.js";
 
 async function main(): Promise<void> {
   const app = resolveCliApp();
-  console.log(`App: ${app.name} (devbox ${app.devboxId})`);
+  console.log(`App: ${app.name} (${app.backend})`);
   console.log(`  Source: ${app.sourceDir}`);
   console.log(`  Remote: ${app.remoteDir}`);
   const dryRun = process.argv.slice(2).includes("--dry-run");

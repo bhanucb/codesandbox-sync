@@ -1,18 +1,35 @@
 import fs from "fs";
 import path from "path";
 import { configPath, loadEnv } from "./paths.js";
+import type { BackendKind } from "./storage/types.js";
 
 export type AppEntry = {
   sourceDir: string;
-  remoteDir: string;
+  /** Devbox directory, or the R2 key prefix; defaults to the app name on R2. */
+  remoteDir?: string;
   downloadDir?: string;
   devboxId?: string;
+  backend?: BackendKind;
   exclude?: string[];
+};
+
+/** Everything needed to reach an R2 bucket. Secrets come from the environment. */
+export type BackendOverride = BackendKind | undefined;
+
+export type R2Settings = {
+  bucket: string;
+  accountId: string;
+  endpoint: string;
+  accessKeyId: string;
+  secretAccessKey: string;
 };
 
 export type SyncConfig = {
   defaults: {
     devboxId?: string;
+    backend?: BackendKind;
+    /** Non-secret R2 settings; credentials stay in the environment. */
+    r2?: { bucket?: string; accountId?: string; endpoint?: string };
     /** Parent directory on the devbox for apps that don't set remoteDir. */
     remoteRoot?: string;
     exclude?: string[];
@@ -24,10 +41,14 @@ export type SyncConfig = {
 export type ResolvedApp = {
   name: string;
   sourceDir: string;
+  /** Devbox directory, or the R2 key prefix. */
   remoteDir: string;
   downloadDir?: string;
-  /** Always resolved — an app without a devbox id cannot be constructed. */
-  devboxId: string;
+  backend: BackendKind;
+  /** Set only for the codesandbox backend. */
+  devboxId?: string;
+  /** Set only for the r2 backend. */
+  r2?: R2Settings;
   exclude: string[];
   /** Undefined when unset in config, so PRESERVE_NODE_MODULES can decide. */
   preserveNodeModules?: boolean;
@@ -151,6 +172,18 @@ function parseExcludeList(value: unknown, label: string): string[] {
   return dedupeStrings(out);
 }
 
+const BACKENDS: readonly BackendKind[] = ["codesandbox", "r2"];
+
+function parseBackend(value: unknown, label: string): BackendKind | undefined {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+  if (typeof value !== "string" || !BACKENDS.includes(value as BackendKind)) {
+    throw new Error(`${label} must be one of: ${BACKENDS.join(", ")}`);
+  }
+  return value as BackendKind;
+}
+
 function parseAppEntry(name: string, raw: unknown): AppEntry {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error(`apps."${name}" must be an object`);
@@ -161,15 +194,23 @@ function parseAppEntry(name: string, raw: unknown): AppEntry {
   if (typeof sourceDir !== "string" || sourceDir.trim().length === 0) {
     throw new Error(`apps."${name}".sourceDir is required`);
   }
-  if (typeof remoteDir !== "string" || remoteDir.trim().length === 0) {
-    throw new Error(`apps."${name}".remoteDir is required`);
+  // remoteDir is optional: the r2 backend defaults it to the app name, and
+  // toResolvedApp requires it only when the resolved backend is codesandbox.
+  if (remoteDir !== undefined && typeof remoteDir !== "string") {
+    throw new Error(`apps."${name}".remoteDir must be a string`);
   }
   const entry: AppEntry = {
     sourceDir: path.resolve(sourceDir.trim()),
-    remoteDir: remoteDir.trim(),
   };
+  if (typeof remoteDir === "string" && remoteDir.trim().length > 0) {
+    entry.remoteDir = remoteDir.trim();
+  }
+  entry.backend = parseBackend(obj.backend, `apps."${name}".backend`);
   if (typeof obj.downloadDir === "string" && obj.downloadDir.trim().length > 0) {
     entry.downloadDir = path.resolve(obj.downloadDir.trim());
+  }
+  if (entry.backend === undefined) {
+    delete entry.backend;
   }
   if (typeof obj.devboxId === "string" && obj.devboxId.trim().length > 0) {
     entry.devboxId = obj.devboxId.trim();
@@ -210,6 +251,26 @@ export function loadConfig(): SyncConfig {
   }
   if (typeof d.remoteRoot === "string" && d.remoteRoot.trim().length > 0) {
     defaults.remoteRoot = d.remoteRoot.trim().replace(/\/+$/g, "");
+  }
+  const backend = parseBackend(d.backend, `${file}: defaults.backend`);
+  if (backend) {
+    defaults.backend = backend;
+  }
+  if (d.r2 !== undefined) {
+    if (d.r2 === null || typeof d.r2 !== "object" || Array.isArray(d.r2)) {
+      throw new Error(`${file}: "defaults.r2" must be an object`);
+    }
+    const r2Raw = d.r2 as Record<string, unknown>;
+    const r2: NonNullable<SyncConfig["defaults"]["r2"]> = {};
+    for (const key of ["bucket", "accountId", "endpoint"] as const) {
+      const value = r2Raw[key];
+      if (typeof value === "string" && value.trim().length > 0) {
+        r2[key] = value.trim();
+      }
+    }
+    if (Object.keys(r2).length > 0) {
+      defaults.r2 = r2;
+    }
   }
   const defaultExclude = parseExcludeList(d.exclude, `${file}: defaults.exclude`);
   if (defaultExclude.length > 0) {
@@ -290,19 +351,105 @@ export function defaultRemoteDir(name: string, config: SyncConfig): string {
   return `${root}/${name}`;
 }
 
+/** Which backend an app syncs through; codesandbox unless told otherwise. */
+export function resolveBackend(entry: AppEntry, config: SyncConfig): BackendKind {
+  loadEnv();
+  const fromEnv = process.env.SYNC_BACKEND?.trim();
+  if (fromEnv && !BACKENDS.includes(fromEnv as BackendKind)) {
+    throw new Error(
+      `SYNC_BACKEND must be one of: ${BACKENDS.join(", ")} (got "${fromEnv}")`
+    );
+  }
+  return (
+    entry.backend ??
+    config.defaults.backend ??
+    (fromEnv as BackendKind | undefined) ??
+    "codesandbox"
+  );
+}
+
+/**
+ * R2 credentials live in the environment only; apps.json carries the bucket
+ * and account id so the registry stays safe to commit.
+ */
+export function requireR2Settings(name: string, config: SyncConfig): R2Settings {
+  loadEnv();
+  const missing: string[] = [];
+  const need = (value: string | undefined, label: string): string => {
+    const trimmed = value?.trim();
+    if (!trimmed) {
+      missing.push(label);
+      return "";
+    }
+    return trimmed;
+  };
+
+  const bucket = need(
+    process.env.R2_BUCKET || config.defaults.r2?.bucket,
+    "R2_BUCKET (or defaults.r2.bucket in apps.json)"
+  );
+  const accountId = need(
+    process.env.R2_ACCOUNT_ID || config.defaults.r2?.accountId,
+    "R2_ACCOUNT_ID (or defaults.r2.accountId in apps.json)"
+  );
+  const accessKeyId = need(process.env.R2_ACCESS_KEY_ID, "R2_ACCESS_KEY_ID");
+  const secretAccessKey = need(
+    process.env.R2_SECRET_ACCESS_KEY,
+    "R2_SECRET_ACCESS_KEY"
+  );
+
+  if (missing.length > 0) {
+    throw new Error(
+      `App "${name}" uses the r2 backend but is missing: ${missing.join(", ")}. Set them in .env.local.`
+    );
+  }
+
+  const endpoint =
+    process.env.R2_ENDPOINT?.trim() ||
+    config.defaults.r2?.endpoint ||
+    `https://${accountId}.r2.cloudflarestorage.com`;
+
+  return { bucket, accountId, endpoint, accessKeyId, secretAccessKey };
+}
+
+/** The devbox backend cannot guess where files go; R2 falls back to the name. */
+function requireRemoteDir(name: string, entry: AppEntry): string {
+  if (!entry.remoteDir) {
+    throw new Error(
+      `App "${name}" has no remoteDir — set one with update_app, or add "defaults.remoteRoot" to apps.json`
+    );
+  }
+  return entry.remoteDir;
+}
+
 export function toResolvedApp(
   name: string,
   entry: AppEntry,
   config: SyncConfig
 ): ResolvedApp {
-  return {
+  const backend = resolveBackend(entry, config);
+  const base = {
     name,
     sourceDir: entry.sourceDir,
-    remoteDir: entry.remoteDir,
     downloadDir: entry.downloadDir,
-    devboxId: requireDevboxId(name, entry, config),
+    backend,
     exclude: resolveExcludes(entry, config),
     preserveNodeModules: config.defaults.preserveNodeModules,
+  };
+
+  if (backend === "r2") {
+    return {
+      ...base,
+      // A prefix, not a path: objects land at "<prefix>/<app>_<ts>.zip".
+      remoteDir: entry.remoteDir ?? sanitizeAppName(name),
+      r2: requireR2Settings(name, config),
+    };
+  }
+
+  return {
+    ...base,
+    remoteDir: requireRemoteDir(name, entry),
+    devboxId: requireDevboxId(name, entry, config),
   };
 }
 
@@ -317,6 +464,8 @@ export type ResolveOptions = {
   config?: SyncConfig;
   /** Explicit devbox id (e.g. --devbox); wins over config and environment. */
   devboxId?: string;
+  /** Explicit backend (e.g. --backend); wins over config and environment. */
+  backend?: BackendKind;
 };
 
 /**
@@ -336,7 +485,7 @@ export function resolveApp(options: ResolveOptions = {}): ResolvedApp {
         `Unknown app "${options.appName}". Configured apps: ${known}`
       );
     }
-    return toResolvedApp(options.appName, withDevbox(entry, options), config);
+    return toResolvedApp(options.appName, withOverrides(entry, options), config);
   }
 
   if (names.length === 0) {
@@ -370,11 +519,18 @@ export function resolveApp(options: ResolveOptions = {}): ResolvedApp {
       `Path ${hint} matches multiple apps: ${matches.join(", ")}. Pass app_name explicitly.`
     );
   }
-  return toResolvedApp(best, withDevbox(config.apps[best], options), config);
+  return toResolvedApp(best, withOverrides(config.apps[best], options), config);
 }
 
-function withDevbox(entry: AppEntry, options: ResolveOptions): AppEntry {
-  return options.devboxId ? { ...entry, devboxId: options.devboxId } : entry;
+function withOverrides(entry: AppEntry, options: ResolveOptions): AppEntry {
+  let out = entry;
+  if (options.devboxId) {
+    out = { ...out, devboxId: options.devboxId };
+  }
+  if (options.backend) {
+    out = { ...out, backend: options.backend };
+  }
+  return out;
 }
 
 export function requireToken(): string {
@@ -393,6 +549,7 @@ export type AppInput = {
   remoteDir?: string;
   downloadDir?: string | null;
   devboxId?: string | null;
+  backend?: BackendKind | null;
   exclude?: string[] | null;
 };
 
@@ -416,10 +573,18 @@ export function addApp(name: string, input: AppInput): ResolvedApp {
 
   const entry: AppEntry = {
     sourceDir: validateSourceDir(input.sourceDir),
-    remoteDir: (
-      input.remoteDir?.trim() || defaultRemoteDir(appName, config)
-    ).replace(/\/+$/g, ""),
   };
+  if (input.backend) {
+    entry.backend = input.backend;
+  }
+  const backend = resolveBackend(entry, config);
+  const remoteDir = input.remoteDir?.trim();
+  if (remoteDir) {
+    entry.remoteDir = remoteDir.replace(/\/+$/g, "");
+  } else if (backend === "codesandbox") {
+    // R2 derives its prefix from the app name; a devbox needs a real path.
+    entry.remoteDir = defaultRemoteDir(appName, config).replace(/\/+$/g, "");
+  }
   if (input.downloadDir) {
     entry.downloadDir = path.resolve(input.downloadDir.trim());
   }
@@ -469,6 +634,13 @@ export function updateApp(name: string, patch: Partial<AppInput>): ResolvedApp {
       updated.devboxId = patch.devboxId.trim();
     }
   }
+  if (patch.backend !== undefined) {
+    if (patch.backend === null) {
+      delete updated.backend;
+    } else {
+      updated.backend = patch.backend;
+    }
+  }
   if (patch.exclude !== undefined) {
     const exclude = parseExcludeList(patch.exclude ?? undefined, `exclude for "${name}"`);
     if (exclude.length > 0) {
@@ -496,8 +668,9 @@ export function removeApp(name: string): void {
 export type AppListing = {
   name: string;
   sourceDir: string;
-  remoteDir: string;
+  remoteDir?: string;
   downloadDir?: string;
+  backend?: BackendKind;
   devboxId?: string;
   exclude?: string[];
   sourceExists: boolean;
@@ -521,6 +694,8 @@ export function listApps(): AppListing[] {
       };
       try {
         const resolved = toResolvedApp(name, entry, config);
+        listing.backend = resolved.backend;
+        listing.remoteDir = resolved.remoteDir;
         listing.devboxId = resolved.devboxId;
         listing.exclude = resolved.exclude;
       } catch (error) {
