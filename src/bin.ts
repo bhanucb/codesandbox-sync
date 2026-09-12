@@ -150,7 +150,7 @@ function resolveTarget(argv: readonly string[], flags: Flags): ResolvedApp {
     // No app owns this directory — fall back to APP_NAME, and surface the
     // original error if that fails too.
     try {
-      return applyOverrides(resolveCliApp([...argv]), flags);
+      return applyOverrides(resolveCliApp([...argv], { validate: false }), flags);
     } catch {
       throw cwdError;
     }

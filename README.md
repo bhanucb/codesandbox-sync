@@ -84,8 +84,10 @@ psync upload --source . --prefix scratch
 ```
 
 From inside this repo, without `npm link`: `npm run upload -- --app my-app`
-(also `download`, `verify`). These check `APP_NAME` before the current
-directory.
+(also `download`, `verify`). **The `--` is required** — without it npm claims
+`--app` as its own config flag and the script never sees it. These check
+`APP_NAME` before the current directory, so a forwarded-but-unrecognized
+argument is a hard error rather than a silent fallback to another project.
 
 ## MCP server
 
