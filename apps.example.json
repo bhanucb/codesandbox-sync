@@ -2,8 +2,11 @@
   "defaults": {
     "r2": {
       "bucket": "project-zips",
-      "accountId": "your-cloudflare-account-id"
+      "accountId": "REPLACE_WITH_YOUR_ACCOUNT_ID",
+      "accessKeyId": "REPLACE_WITH_YOUR_R2_ACCESS_KEY_ID",
+      "secretAccessKey": "REPLACE_WITH_YOUR_R2_SECRET"
     },
+    "app": "my-app",
     "exclude": ["dist", "coverage"]
   },
   "apps": {

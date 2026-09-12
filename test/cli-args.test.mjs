@@ -4,7 +4,7 @@ import { resolveCliApp } from "../dist/cli.js";
 
 test("a bare argument is rejected, not silently ignored", () => {
   // `npm run upload --app foo` forwards only "foo": npm claims --app itself.
-  // Ignoring it used to fall through to APP_NAME and upload another project.
+  // Ignoring it used to fall through to defaults.app and upload another project.
   assert.throws(() => resolveCliApp(["project-sync"]), (error) => {
     assert.match(error.message, /Unexpected argument "project-sync"/);
     assert.match(error.message, /-- --app project-sync/);

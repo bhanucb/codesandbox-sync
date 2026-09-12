@@ -1,7 +1,7 @@
 {
   "name": "project-sync",
   "version": "1.0.0",
-  "description": "Zip a local project to a Cloudflare R2 bucket and back — as a CLI and as an MCP server.",
+  "description": "Zip a local project to a Cloudflare R2 bucket and back \u2014 as a CLI and as an MCP server.",
   "license": "MIT",
   "author": "Bhanu Bandaranayake",
   "keywords": [
@@ -36,7 +36,6 @@
   "files": [
     "dist",
     "apps.example.json",
-    ".env.example",
     "README.md",
     "SETUP.md",
     "LICENSE"
@@ -46,7 +45,6 @@
     "@modelcontextprotocol/sdk": "^1.30.0",
     "adm-zip": "^0.5.16",
     "archiver": "^6.0.2",
-    "dotenv": "^16.4.5",
     "https-proxy-agent": "9.1.0",
     "zod": "^4.4.3"
   },

@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { configPath, loadEnv } from "./paths.js";
+import { configPath } from "./paths.js";
 
 export type AppEntry = {
   sourceDir: string;
@@ -21,8 +21,16 @@ export type R2Settings = {
 
 export type SyncConfig = {
   defaults: {
-    /** Non-secret R2 settings; credentials stay in the environment. */
-    r2?: { bucket?: string; accountId?: string; endpoint?: string };
+    /** R2 connection settings, credentials included. */
+    r2?: {
+      bucket?: string;
+      accountId?: string;
+      endpoint?: string;
+      accessKeyId?: string;
+      secretAccessKey?: string;
+    };
+    /** App used by the `npm run …` scripts when --app is omitted. */
+    app?: string;
     exclude?: string[];
     preserveNodeModules?: boolean;
   };
@@ -229,13 +237,23 @@ export function loadConfig(): SyncConfig {
   const d = (defaultsRaw ?? {}) as Record<string, unknown>;
   const defaults: SyncConfig["defaults"] = {};
 
+  if (typeof d.app === "string" && d.app.trim().length > 0) {
+    defaults.app = d.app.trim();
+  }
+
   if (d.r2 !== undefined) {
     if (d.r2 === null || typeof d.r2 !== "object" || Array.isArray(d.r2)) {
       throw new Error(`${file}: "defaults.r2" must be an object`);
     }
     const r2Raw = d.r2 as Record<string, unknown>;
     const r2: NonNullable<SyncConfig["defaults"]["r2"]> = {};
-    for (const key of ["bucket", "accountId", "endpoint"] as const) {
+    for (const key of [
+      "bucket",
+      "accountId",
+      "endpoint",
+      "accessKeyId",
+      "secretAccessKey",
+    ] as const) {
       const value = r2Raw[key];
       if (typeof value === "string" && value.trim().length > 0) {
         r2[key] = value.trim();
@@ -295,11 +313,11 @@ export function resolveExcludes(entry: AppEntry, config: SyncConfig): string[] {
 }
 
 /**
- * Bucket and account id may live in apps.json, so the registry stays useful on
- * its own; the key pair never does, so the registry stays safe to commit.
+ * apps.json is the single source of configuration. Real environment variables
+ * still win where they are set, which keeps CI and one-off overrides working
+ * without a second config file to maintain.
  */
 export function requireR2Settings(name: string, config: SyncConfig): R2Settings {
-  loadEnv();
   const missing: string[] = [];
   const need = (value: string | undefined, label: string): string => {
     const trimmed = value?.trim();
@@ -310,29 +328,30 @@ export function requireR2Settings(name: string, config: SyncConfig): R2Settings 
     return trimmed;
   };
 
-  const bucket = need(
-    process.env.R2_BUCKET || config.defaults.r2?.bucket,
-    "R2_BUCKET (or defaults.r2.bucket in apps.json)"
-  );
+  const r2 = config.defaults.r2;
+  const bucket = need(process.env.R2_BUCKET || r2?.bucket, "defaults.r2.bucket");
   const accountId = need(
-    process.env.R2_ACCOUNT_ID || config.defaults.r2?.accountId,
-    "R2_ACCOUNT_ID (or defaults.r2.accountId in apps.json)"
+    process.env.R2_ACCOUNT_ID || r2?.accountId,
+    "defaults.r2.accountId"
   );
-  const accessKeyId = need(process.env.R2_ACCESS_KEY_ID, "R2_ACCESS_KEY_ID");
+  const accessKeyId = need(
+    process.env.R2_ACCESS_KEY_ID || r2?.accessKeyId,
+    "defaults.r2.accessKeyId"
+  );
   const secretAccessKey = need(
-    process.env.R2_SECRET_ACCESS_KEY,
-    "R2_SECRET_ACCESS_KEY"
+    process.env.R2_SECRET_ACCESS_KEY || r2?.secretAccessKey,
+    "defaults.r2.secretAccessKey"
   );
 
   if (missing.length > 0) {
     throw new Error(
-      `App "${name}" cannot reach R2 — missing: ${missing.join(", ")}. Set them in .env.local.`
+      `App "${name}" cannot reach R2 — missing: ${missing.join(", ")} in ${configPath()}`
     );
   }
 
   const endpoint =
     process.env.R2_ENDPOINT?.trim() ||
-    config.defaults.r2?.endpoint ||
+    r2?.endpoint ||
     `https://${accountId}.r2.cloudflarestorage.com`;
 
   return { bucket, accountId, endpoint, accessKeyId, secretAccessKey };

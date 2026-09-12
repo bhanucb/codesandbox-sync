@@ -11,7 +11,7 @@ import {
   toResolvedApp,
   type ResolvedApp,
 } from "./config.js";
-import { configPath, loadEnv } from "./paths.js";
+import { configPath } from "./paths.js";
 import { downloadApp, listRemoteZips, uploadApp } from "./sync.js";
 
 const USAGE = `psync — zip a project to Cloudflare R2, and back
@@ -26,7 +26,7 @@ Target resolution, in order:
   --source <dir>   ad-hoc: use this directory, no apps.json entry needed
   --app <name>     a name from apps.json
   (neither)        the app whose sourceDir contains the current directory,
-                   else APP_NAME from .env.local
+                   else defaults.app from apps.json
 
 Options:
   --source <dir>   Directory to zip (implies ad-hoc mode)
@@ -124,15 +124,13 @@ function applyOverrides(app: ResolvedApp, flags: Flags): ResolvedApp {
 
 /**
  * Resolution order for the global command: --source, --app, the current
- * directory, then APP_NAME from .env.local.
+ * directory, then defaults.app from apps.json.
  *
- * Current directory beats APP_NAME here, unlike `npm run upload`. This command
- * is normally run from inside the project being uploaded, so a stale APP_NAME
+ * Current directory beats defaults.app here, unlike `npm run upload`. This command
+ * is normally run from inside the project being uploaded, so a stale defaults.app
  * silently retargeting the upload would be the worst kind of surprise.
  */
 function resolveTarget(argv: readonly string[], flags: Flags): ResolvedApp {
-  loadEnv();
-
   const source = str(flags, "source");
   if (source) {
     return applyOverrides(adHocApp(source, flags), flags);
@@ -147,7 +145,7 @@ function resolveTarget(argv: readonly string[], flags: Flags): ResolvedApp {
   try {
     return applyOverrides(resolveApp({ config }), flags);
   } catch (cwdError) {
-    // No app owns this directory — fall back to APP_NAME, and surface the
+    // No app owns this directory — fall back to defaults.app, and surface the
     // original error if that fails too.
     try {
       return applyOverrides(resolveCliApp([...argv], { validate: false }), flags);

@@ -44,7 +44,7 @@ test("an app's object prefix defaults to its name", async () => {
   clearR2Env();
   setR2Credentials();
   const { mod } = await withRegistry({
-    defaults: { r2: { bucket: "project-zips", accountId: "acct123" } },
+    defaults: { r2: { bucket: "project-zips", accountId: "acct123", accessKeyId: "k", secretAccessKey: "s" } },
     apps: { demo: {}, custom: { remotePrefix: "archive/custom" } },
   });
   assert.equal(mod.resolveApp({ appName: "demo" }).remotePrefix, "demo");
@@ -55,7 +55,7 @@ test("the endpoint is derived from the account id unless overridden", async () =
   clearR2Env();
   setR2Credentials();
   const { mod } = await withRegistry({
-    defaults: { r2: { bucket: "project-zips", accountId: "acct123" } },
+    defaults: { r2: { bucket: "project-zips", accountId: "acct123", accessKeyId: "k", secretAccessKey: "s" } },
     apps: { demo: {} },
   });
   assert.equal(
@@ -72,7 +72,14 @@ test("environment settings win over apps.json for bucket and account", async () 
   clearR2Env();
   setR2Credentials();
   const { mod } = await withRegistry({
-    defaults: { r2: { bucket: "from-file", accountId: "acct-file" } },
+    defaults: {
+      r2: {
+        bucket: "from-file",
+        accountId: "acct-file",
+        accessKeyId: "k",
+        secretAccessKey: "s",
+      },
+    },
     apps: { demo: {} },
   });
   assert.equal(mod.resolveApp({ appName: "demo" }).r2.bucket, "from-file");
@@ -84,35 +91,55 @@ test("environment settings win over apps.json for bucket and account", async () 
   assert.equal(app.r2.accountId, "acct-env");
 });
 
-test("missing R2 settings are reported together", async () => {
+test("missing R2 settings are reported together, naming the registry", async () => {
   clearR2Env();
   const { mod } = await withRegistry({ defaults: {}, apps: { demo: {} } });
 
   assert.throws(() => mod.resolveApp({ appName: "demo" }), (error) => {
-    assert.match(error.message, /R2_BUCKET/);
-    assert.match(error.message, /R2_ACCOUNT_ID/);
-    assert.match(error.message, /R2_ACCESS_KEY_ID/);
-    assert.match(error.message, /R2_SECRET_ACCESS_KEY/);
+    assert.match(error.message, /defaults\.r2\.bucket/);
+    assert.match(error.message, /defaults\.r2\.accountId/);
+    assert.match(error.message, /defaults\.r2\.accessKeyId/);
+    assert.match(error.message, /defaults\.r2\.secretAccessKey/);
+    assert.match(error.message, /apps\.json/);
     return true;
   });
 });
 
-test("credentials are never read from apps.json", async () => {
+test("apps.json is a complete config: credentials included", async () => {
   clearR2Env();
-  // A registry that tries to supply the key pair must not satisfy the check:
-  // apps.json is committed, and secrets in it would leak.
   const { mod } = await withRegistry({
     defaults: {
       r2: {
         bucket: "project-zips",
         accountId: "acct123",
-        accessKeyId: "leaked",
-        secretAccessKey: "leaked",
+        accessKeyId: "key-from-file",
+        secretAccessKey: "secret-from-file",
       },
     },
     apps: { demo: {} },
   });
-  assert.throws(() => mod.resolveApp({ appName: "demo" }), /R2_ACCESS_KEY_ID/);
+  const app = mod.resolveApp({ appName: "demo" });
+  assert.equal(app.r2.accessKeyId, "key-from-file");
+  assert.equal(app.r2.secretAccessKey, "secret-from-file");
+});
+
+test("a real environment variable still overrides the registry", async () => {
+  clearR2Env();
+  const { mod } = await withRegistry({
+    defaults: {
+      r2: {
+        bucket: "project-zips",
+        accountId: "acct123",
+        accessKeyId: "key-from-file",
+        secretAccessKey: "secret-from-file",
+      },
+    },
+    apps: { demo: {} },
+  });
+  // Keeps CI and one-off overrides working without a second config file.
+  process.env.R2_ACCESS_KEY_ID = "key-from-env";
+  assert.equal(mod.resolveApp({ appName: "demo" }).r2.accessKeyId, "key-from-env");
+  clearR2Env();
 });
 
 test("a key prefix cannot escape its bucket namespace", async () => {
@@ -120,7 +147,7 @@ test("a key prefix cannot escape its bucket namespace", async () => {
   setR2Credentials();
   await assert.rejects(
     withRegistry({
-      defaults: { r2: { bucket: "b", accountId: "a" } },
+      defaults: { r2: { bucket: "b", accountId: "a", accessKeyId: "k", secretAccessKey: "s" } },
       apps: { demo: { remotePrefix: "../other-bucket" } },
     }).then(({ mod }) => mod.loadConfig()),
     /\.\./
@@ -131,7 +158,7 @@ test("a leading or trailing slash in a prefix is normalized away", async () => {
   clearR2Env();
   setR2Credentials();
   const { mod } = await withRegistry({
-    defaults: { r2: { bucket: "project-zips", accountId: "acct123" } },
+    defaults: { r2: { bucket: "project-zips", accountId: "acct123", accessKeyId: "k", secretAccessKey: "s" } },
     apps: { demo: { remotePrefix: "/archive/demo/" } },
   });
   assert.equal(mod.resolveApp({ appName: "demo" }).remotePrefix, "archive/demo");

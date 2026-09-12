@@ -12,7 +12,7 @@ import {
   updateApp,
   type ResolvedApp,
 } from "./config.js";
-import { configPath, loadEnv } from "./paths.js";
+import { configPath } from "./paths.js";
 import { downloadApp, listRemoteZips, mtimeToDate, uploadApp } from "./sync.js";
 import type { Logger } from "./zip.js";
 
@@ -20,7 +20,6 @@ import type { Logger } from "./zip.js";
 // (ours or a dependency's) must go to stderr instead.
 console.log = console.error;
 
-loadEnv();
 
 const MAX_LOG_LINES = 120;
 

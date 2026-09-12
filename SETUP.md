@@ -28,21 +28,37 @@ npm test
 
 All tests must pass.
 
-## 2. Credentials
+## 2. Configuration
+
+There is one configuration file. Copy the template:
 
 ```bash
-cp .env.example .env.local
+cp apps.example.json apps.json
 ```
 
-Set `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY`. Set `R2_BUCKET` and
-`R2_ACCOUNT_ID` here, or under `defaults.r2` in `apps.json` — credentials are
-only ever read from the environment, so they never reach the registry.
+Everything lives here — the R2 connection and the projects. Section 3 fills in
+the projects; fill in `defaults.r2` now with the values the user gave you:
 
-If the machine sits behind a corporate proxy, also set `HTTPS_PROXY`, and
-`NODE_EXTRA_CA_CERTS` when that proxy intercepts TLS.
+```json
+{
+  "defaults": {
+    "r2": {
+      "bucket": "<their bucket>",
+      "accountId": "<their account id>",
+      "accessKeyId": "<their R2 access key id>",
+      "secretAccessKey": "<their R2 secret>"
+    }
+  }
+}
+```
 
-Never print, commit, or transmit the credentials. `.env.local` is gitignored;
-the file is optional if the user prefers real environment variables.
+`apps.json` and `apps.json.*` are gitignored and must stay that way: the file
+holds live credentials, so anyone who can read it can read and write the
+bucket. Never print, commit, or transmit it.
+
+If the machine sits behind a corporate proxy, set `HTTPS_PROXY` in the real
+environment, and `NODE_EXTRA_CA_CERTS` when that proxy intercepts TLS. Those
+two stay environment variables because they are machine-wide, not per-project.
 
 ## 3. Register projects
 
@@ -122,8 +138,7 @@ Claude Code has a command instead:
 claude mcp add project-sync -- node /absolute/path/to/dist/mcp.js
 ```
 
-The server reads `.env.local` and `apps.json` from its own directory. If
-credentials live in the environment, put them in the client's `env` block.
+The server reads `apps.json` from its own directory.
 
 Smoke-test — this must print tool names, and nothing else on stdout:
 
@@ -169,7 +184,7 @@ other edits the registry.
 
 | Message | Cause |
 | --- | --- |
-| `cannot reach R2 — missing: …` | Named variables not set in `.env.local` |
+| `cannot reach R2 — missing: …` | Named keys absent from `defaults.r2` in apps.json |
 | `SignatureDoesNotMatch` | Secret truncated on paste |
 | `NoSuchBucket` | Wrong `R2_BUCKET` or `R2_ACCOUNT_ID` |
 | Request fails with a certificate error | Proxy intercepts TLS — set `NODE_EXTRA_CA_CERTS` |

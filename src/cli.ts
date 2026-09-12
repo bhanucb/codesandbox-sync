@@ -4,7 +4,6 @@ import {
   sanitizeAppName,
   type ResolvedApp,
 } from "./config.js";
-import { loadEnv } from "./paths.js";
 
 /** Flags the `npm run …` entry points understand. */
 const VALUE_FLAGS = new Set(["app"]);
@@ -15,7 +14,7 @@ const BOOLEAN_FLAGS = new Set(["dry-run", "yes", "help"]);
  *
  * `npm run upload --app foo` does not do what it looks like: npm claims --app
  * as its own config flag and forwards the bare word "foo". Silently dropping it
- * and falling back to APP_NAME meant uploading a completely different project,
+ * and falling back to defaults.app meant uploading a completely different project,
  * so an unrecognized argument is now a hard error.
  */
 function assertRecognizedArgs(argv: readonly string[]): void {
@@ -50,14 +49,13 @@ function flagValue(argv: string[], flag: string): string | undefined {
 }
 
 /**
- * Resolves the app for a CLI run: `--app <name>`, then APP_NAME from
- * .env.local, then cwd.
+ * Resolves the app for a CLI run: `--app <name>`, then defaults.app from
+ * apps.json, then cwd.
  */
 export function resolveCliApp(
   argv: string[] = process.argv.slice(2),
   options: { validate?: boolean } = {}
 ): ResolvedApp {
-  loadEnv();
   // psync has its own parser and a richer flag set; only the `npm run …`
   // entry points, whose whole vocabulary is --app and --dry-run, validate here.
   if (options.validate ?? true) {
@@ -70,11 +68,11 @@ export function resolveCliApp(
     return resolveApp({ appName: explicit, config });
   }
 
-  const envName = process.env.APP_NAME
-    ? sanitizeAppName(process.env.APP_NAME)
+  const fallback = config.defaults.app
+    ? sanitizeAppName(config.defaults.app)
     : undefined;
-  if (envName && config.apps[envName]) {
-    return resolveApp({ appName: envName, config });
+  if (fallback && config.apps[fallback]) {
+    return resolveApp({ appName: fallback, config });
   }
 
   return resolveApp({ config });

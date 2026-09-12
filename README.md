@@ -20,26 +20,19 @@ npm install && npm run build && npm link
 
 ## Configure
 
-**Credentials** — environment variables, or an optional `.env.local`
-(`cp .env.example .env.local`). Real env vars win.
-
-```env
-R2_ACCESS_KEY_ID=...     # R2 API token, scoped Object Read & Write
-R2_SECRET_ACCESS_KEY=...
-R2_BUCKET=project-zips   # may live in apps.json instead
-R2_ACCOUNT_ID=...        # may live in apps.json instead
-```
-
-Credentials are never read from `apps.json` — only the bucket and account id
-are, so the registry stays safe to commit. Create the token in the Cloudflare
-dashboard under R2 → API → Manage API tokens; scope it to the one bucket.
-
-**Projects** — `apps.json` (`cp apps.example.json apps.json`):
+`apps.json` is the only configuration file (`cp apps.example.json apps.json`).
+It holds both the R2 connection and the projects:
 
 ```json
 {
   "defaults": {
-    "r2": { "bucket": "project-zips", "accountId": "your-account-id" }
+    "r2": {
+      "bucket": "project-zips",
+      "accountId": "your-account-id",
+      "accessKeyId": "your-r2-access-key-id",
+      "secretAccessKey": "your-r2-secret"
+    },
+    "app": "my-app"
   },
   "apps": {
     "my-app": {
@@ -49,6 +42,17 @@ dashboard under R2 → API → Manage API tokens; scope it to the one bucket.
   }
 }
 ```
+
+Create the credentials in the Cloudflare dashboard under R2 → API → Manage API
+tokens, scoped to the one bucket with Object Read & Write.
+
+**`apps.json` holds live credentials, so it is gitignored** (along with
+`apps.json.*`) and must stay that way. Anyone who can read the file can read
+and write the bucket.
+
+Real environment variables still win where set — `R2_BUCKET`, `R2_ACCOUNT_ID`,
+`R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT` — which keeps CI and
+one-off overrides working without a second config file.
 
 | Field | Required | Meaning |
 | --- | --- | --- |
@@ -61,8 +65,10 @@ Objects land at `<remotePrefix>/<app>_<timestamp>.zip`. A prefix is a key
 namespace, not a filesystem path: it is normalized to a relative, slash-
 separated form and cannot contain `..`.
 
-`defaults` also accepts `r2`, `exclude`, and `preserveNodeModules`.
-`SYNC_CONFIG` points at a different registry file.
+`defaults` also accepts `app` (the app the `npm run …` scripts use when
+`--app` is omitted), `exclude`, and `preserveNodeModules`. `SYNC_CONFIG` stays
+an environment variable — it names which registry to read, so it cannot live
+inside one.
 
 ## CLI
 
@@ -74,7 +80,7 @@ psync verify --app my-app
 psync apps
 ```
 
-Target order: `--source`, `--app`, current directory, then `APP_NAME`.
+Target order: `--source`, `--app`, current directory, then `defaults.app`.
 Overrides for one run: `--prefix`, `--to`.
 
 Ad-hoc, nothing registered:
@@ -86,7 +92,7 @@ psync upload --source . --prefix scratch
 From inside this repo, without `npm link`: `npm run upload -- --app my-app`
 (also `download`, `verify`). **The `--` is required** — without it npm claims
 `--app` as its own config flag and the script never sees it. These check
-`APP_NAME` before the current directory, so a forwarded-but-unrecognized
+`defaults.app` before the current directory, so a forwarded-but-unrecognized
 argument is a hard error rather than a silent fallback to another project.
 
 ## MCP server
