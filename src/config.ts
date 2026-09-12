@@ -8,6 +8,8 @@ export type AppEntry = {
   remotePrefix?: string;
   downloadDir?: string;
   exclude?: string[];
+  /** Overrides every exclusion, including the built-in ones. */
+  include?: string[];
 };
 
 /** Everything needed to reach an R2 bucket. Secrets come from the environment. */
@@ -31,6 +33,7 @@ export type SyncConfig = {
     };
     /** App used by the `npm run …` scripts when --app is omitted. */
     app?: string;
+    include?: string[];
     exclude?: string[];
     preserveNodeModules?: boolean;
   };
@@ -45,6 +48,8 @@ export type ResolvedApp = {
   downloadDir?: string;
   r2: R2Settings;
   exclude: string[];
+  /** Wins over `exclude`, so a project can ship what is normally skipped. */
+  include: string[];
   /** Undefined when unset in config, so PRESERVE_NODE_MODULES can decide. */
   preserveNodeModules?: boolean;
 };
@@ -206,6 +211,10 @@ function parseAppEntry(name: string, raw: unknown): AppEntry {
   if (exclude.length > 0) {
     entry.exclude = exclude;
   }
+  const include = parseExcludeList(obj.include, `apps."${name}".include`);
+  if (include.length > 0) {
+    entry.include = include;
+  }
   return entry;
 }
 
@@ -268,6 +277,10 @@ export function loadConfig(): SyncConfig {
   if (defaultExclude.length > 0) {
     defaults.exclude = defaultExclude;
   }
+  const defaultInclude = parseExcludeList(d.include, `${file}: defaults.include`);
+  if (defaultInclude.length > 0) {
+    defaults.include = defaultInclude;
+  }
   if (typeof d.preserveNodeModules === "boolean") {
     defaults.preserveNodeModules = d.preserveNodeModules;
   }
@@ -301,6 +314,14 @@ export function saveConfig(config: SyncConfig): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(tmp, `${JSON.stringify(ordered, null, 2)}\n`, "utf8");
   fs.renameSync(tmp, file);
+}
+
+/** Include patterns win over every exclusion, built-in ones included. */
+export function resolveIncludes(entry: AppEntry, config: SyncConfig): string[] {
+  return dedupeStrings([
+    ...(config.defaults.include ?? []),
+    ...(entry.include ?? []),
+  ]);
 }
 
 export function resolveExcludes(entry: AppEntry, config: SyncConfig): string[] {
@@ -369,6 +390,7 @@ export function toResolvedApp(
     downloadDir: entry.downloadDir,
     r2: requireR2Settings(name, config),
     exclude: resolveExcludes(entry, config),
+    include: resolveIncludes(entry, config),
     preserveNodeModules: config.defaults.preserveNodeModules,
   };
 }
@@ -441,6 +463,7 @@ export type AppInput = {
   remotePrefix?: string | null;
   downloadDir?: string | null;
   exclude?: string[] | null;
+  include?: string[] | null;
 };
 
 function validateSourceDir(sourceDir: string): string {
@@ -474,6 +497,10 @@ export function addApp(name: string, input: AppInput): ResolvedApp {
   const exclude = parseExcludeList(input.exclude ?? undefined, `exclude for "${appName}"`);
   if (exclude.length > 0) {
     entry.exclude = exclude;
+  }
+  const include = parseExcludeList(input.include ?? undefined, `include for "${appName}"`);
+  if (include.length > 0) {
+    entry.include = include;
   }
 
   config.apps[appName] = entry;
@@ -518,6 +545,14 @@ export function updateApp(name: string, patch: Partial<AppInput>): ResolvedApp {
       delete updated.exclude;
     }
   }
+  if (patch.include !== undefined) {
+    const include = parseExcludeList(patch.include ?? undefined, `include for "${name}"`);
+    if (include.length > 0) {
+      updated.include = include;
+    } else {
+      delete updated.include;
+    }
+  }
 
   config.apps[name] = updated;
   saveConfig(config);
@@ -540,6 +575,7 @@ export type AppListing = {
   remotePrefix: string;
   downloadDir?: string;
   exclude?: string[];
+  include?: string[];
   sourceExists: boolean;
   /** Set when the entry cannot be resolved, e.g. missing R2 credentials. */
   error?: string;
@@ -560,7 +596,11 @@ export function listApps(): AppListing[] {
         sourceExists: fs.existsSync(entry.sourceDir),
       };
       try {
-        listing.exclude = toResolvedApp(name, entry, config).exclude;
+        const resolved = toResolvedApp(name, entry, config);
+        listing.exclude = resolved.exclude;
+        if (resolved.include.length > 0) {
+          listing.include = resolved.include;
+        }
       } catch (error) {
         listing.error = error instanceof Error ? error.message : String(error);
       }

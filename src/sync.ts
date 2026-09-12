@@ -112,10 +112,14 @@ export async function uploadApp(
 
   log(`Zipping ${app.sourceDir}…`);
   log(`  Excluding from ZIP: ${app.exclude.join(", ")}`);
+  if (app.include.length > 0) {
+    log(`  Included anyway: ${app.include.join(", ")}`);
+  }
   const { zipPath, zipFileName, sizeBytes } = await createZip(
     app.sourceDir,
     sanitizeAppName(app.name),
     app.exclude,
+    app.include,
     log
   );
   const sizeMb = toMb(sizeBytes);
@@ -198,8 +202,10 @@ export async function downloadApp(
       log,
       preserveNodeModules: app.preserveNodeModules,
       // Whatever the upload leaves out must survive the reset — the ZIP
-      // cannot restore it.
+      // cannot restore it. What `include` puts back into the ZIP must not be
+      // preserved, or stale files would sit under the extracted ones.
       preservePatterns: app.exclude,
+      includePatterns: app.include,
     });
 
     log(`\nDownloading latest: ${latestFile.name}...`);

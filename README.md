@@ -60,6 +60,7 @@ one-off overrides working without a second config file.
 | `downloadDir` | for `download` | Directory that `download` **resets** and extracts into |
 | `remotePrefix` | no | Object key prefix (default: the app name) |
 | `exclude` | no | Extra paths kept out of the ZIP |
+| `include` | no | Paths to ship anyway, overriding any exclusion |
 
 Objects land at `<remotePrefix>/<app>_<timestamp>.zip`. A prefix is a key
 namespace, not a filesystem path: it is normalized to a relative, slash-
@@ -114,7 +115,7 @@ Any stdio MCP client. The path must be absolute.
 | --- | --- |
 | `list_apps` | — |
 | `get_app` | `app_name?`, `path?` |
-| `add_app` | `name`, `source_dir`, `remote_prefix?`, `download_dir?`, `exclude?` |
+| `add_app` | `name`, `source_dir`, `remote_prefix?`, `download_dir?`, `exclude?`, `include?` |
 | `update_app` | `app_name` + any field (`null` clears) |
 | `remove_app` | `app_name` |
 | `upload_app` | `app_name?`, `path?`, `dry_run?` |
@@ -134,6 +135,15 @@ Omit `app_name` and the app is inferred from `path`, matching each app's
 `.mcp.json`), plus your own `exclude` entries. Any path segment containing
 "copilot" is kept. Patterns match a path segment and may end in `*`; patterns
 with `/` match a path prefix.
+
+**`include` overrides every exclusion**, the built-in ones included — so
+`"include": ["node_modules"]` ships dependencies, and
+`"include": ["node_modules/my-local-pkg"]` ships just that subtree. The
+download side honours it too: anything `include` puts into the ZIP is *not*
+preserved across the reset, or stale files would sit underneath the extracted
+ones. Shipping `node_modules` makes uploads much larger and carries
+platform-specific binaries between machines — reach for it when a package is
+patched or unpublished, not as a habit.
 
 **`download` resets `downloadDir`** before extracting. Anything the upload
 excluded survives, plus `.git/info/exclude` — if it was never in the ZIP,

@@ -76,6 +76,7 @@ function describe(app: ResolvedApp): Record<string, unknown> {
     sourceDir: app.sourceDir,
     remotePrefix: app.remotePrefix,
     downloadDir: app.downloadDir ?? null,
+    include: app.include,
     exclude: app.exclude,
     sourceExists: fs.existsSync(app.sourceDir),
   };
@@ -166,6 +167,10 @@ server.registerTool(
         .array(z.string())
         .optional()
         .describe("Extra paths to exclude from the ZIP (node_modules and .next always are)"),
+      include: z
+        .array(z.string())
+        .optional()
+        .describe("Paths to ship even though an exclusion would catch them, e.g. node_modules"),
     },
   },
   async (args) => {
@@ -175,6 +180,7 @@ server.registerTool(
         remotePrefix: args.remote_prefix,
         downloadDir: args.download_dir,
         exclude: args.exclude,
+        include: args.include,
       });
       return ok(`✅ Added app "${app.name}" to ${configPath()}:`, describe(app));
     } catch (error) {
@@ -195,6 +201,7 @@ server.registerTool(
       remote_prefix: z.string().nullable().optional(),
       download_dir: z.string().nullable().optional(),
       exclude: z.array(z.string()).nullable().optional(),
+      include: z.array(z.string()).nullable().optional(),
     },
   },
   async (args) => {
@@ -204,6 +211,7 @@ server.registerTool(
         remotePrefix: args.remote_prefix,
         downloadDir: args.download_dir,
         exclude: args.exclude,
+        include: args.include,
       });
       return ok(`✅ Updated app "${app.name}":`, describe(app));
     } catch (error) {

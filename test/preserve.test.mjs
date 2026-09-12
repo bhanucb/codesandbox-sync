@@ -68,3 +68,24 @@ test("creates the directory when it does not exist", () => {
   assert.ok(fs.existsSync(root));
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+test("what include ships is not preserved, so the ZIP wins", async () => {
+  const { findPreservedEntries } = await import("../dist/preserve.js");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "psync-include-"));
+  fs.mkdirSync(path.join(root, "node_modules/left-pad"), { recursive: true });
+  fs.mkdirSync(path.join(root, ".next"), { recursive: true });
+  fs.writeFileSync(path.join(root, "node_modules/left-pad/index.js"), "x");
+  fs.writeFileSync(path.join(root, ".next/build"), "y");
+
+  // Without an include, both are kept across the reset.
+  const kept = findPreservedEntries(root, ["node_modules", ".next"]);
+  assert.ok(kept.includes("node_modules"));
+  assert.ok(kept.includes(".next"));
+
+  // With one, node_modules comes from the ZIP instead of surviving underneath.
+  const withInclude = findPreservedEntries(root, ["node_modules", ".next"], ["node_modules"]);
+  assert.ok(!withInclude.includes("node_modules"));
+  assert.ok(withInclude.includes(".next"));
+
+  fs.rmSync(root, { recursive: true, force: true });
+});

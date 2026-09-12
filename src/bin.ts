@@ -108,6 +108,7 @@ function adHocApp(sourceDir: string, flags: Flags): ResolvedApp {
       remotePrefix: str(flags, "prefix") ?? known?.remotePrefix,
       downloadDir: str(flags, "to") ?? known?.downloadDir ?? abs,
       exclude: known?.exclude,
+      include: known?.include,
     },
     config
   );

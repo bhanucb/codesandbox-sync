@@ -57,10 +57,24 @@ export function matchExcludePattern(
   return null;
 }
 
+/**
+ * `includePatterns` is the explicit override: anything it matches ships, no
+ * matter which exclusion would otherwise catch it. Both the archive and the
+ * download-side reset consult this, so the two always agree on what the ZIP
+ * carries — preserving a path the ZIP also ships would leave stale files
+ * underneath the extracted ones.
+ */
 export function zipEntryMatchesExclude(
   relativeEntryName: string,
-  patterns: readonly string[]
+  patterns: readonly string[],
+  includePatterns: readonly string[] = []
 ): boolean {
+  if (
+    includePatterns.length > 0 &&
+    matchExcludePattern(relativeEntryName, includePatterns) !== null
+  ) {
+    return false;
+  }
   const match = matchExcludePattern(relativeEntryName, patterns);
   if (match === null) {
     return false;
@@ -101,6 +115,7 @@ export async function createZip(
   sourceDir: string,
   zipPrefix: string,
   excludePatterns: readonly string[],
+  includePatterns: readonly string[],
   log: Logger
 ): Promise<{ zipPath: string; zipFileName: string; sizeBytes: number }> {
   const zipFileName = `${zipPrefix}_${Date.now()}.zip`;
@@ -141,7 +156,7 @@ export async function createZip(
       if (outputInsideSource && isInsideDir(OUTPUT_DIR, absolute)) {
         return false;
       }
-      if (zipEntryMatchesExclude(entry.name, excludePatterns)) {
+      if (zipEntryMatchesExclude(entry.name, excludePatterns, includePatterns)) {
         return false;
       }
       return entry;

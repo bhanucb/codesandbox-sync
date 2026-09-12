@@ -57,3 +57,24 @@ test("slash patterns match a path prefix only", () => {
   assert.ok(zipEntryMatchesExclude("build/cache/x", ["build/cache"]));
   assert.ok(!zipEntryMatchesExclude("src/build/cache", ["build/cache"]));
 });
+
+test("include overrides an exclusion, at any depth", () => {
+  const ship = (p, inc) => !zipEntryMatchesExclude(p, patterns, inc);
+
+  assert.equal(ship("node_modules/left-pad/index.js", []), false);
+  assert.equal(ship("node_modules/left-pad/index.js", ["node_modules"]), true);
+  // A narrower include lifts only its own subtree.
+  assert.equal(ship("node_modules/left-pad/index.js", ["node_modules/left-pad"]), true);
+  assert.equal(ship("node_modules/other/index.js", ["node_modules/left-pad"]), false);
+});
+
+test("include overrides the built-in assistant exclusions too", () => {
+  const ship = (p, inc) => !zipEntryMatchesExclude(p, patterns, inc);
+  assert.equal(ship(".claude/settings.json", []), false);
+  assert.equal(ship(".claude/settings.json", [".claude"]), true);
+});
+
+test("include does not widen beyond what it names", () => {
+  const ship = (p, inc) => !zipEntryMatchesExclude(p, patterns, inc);
+  assert.equal(ship(".next/build", ["node_modules"]), false);
+});

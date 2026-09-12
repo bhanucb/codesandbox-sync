@@ -52,7 +52,8 @@ export function buildPreservePatterns(
  */
 export function findPreservedEntries(
   root: string,
-  patterns: readonly string[]
+  patterns: readonly string[],
+  includePatterns: readonly string[] = []
 ): string[] {
   const found: string[] = [];
 
@@ -66,7 +67,7 @@ export function findPreservedEntries(
 
     for (const entry of entries) {
       const rel = relDir ? `${relDir}/${entry.name}` : entry.name;
-      if (zipEntryMatchesExclude(rel, patterns)) {
+      if (zipEntryMatchesExclude(rel, patterns, includePatterns)) {
         found.push(rel);
         continue;
       }
@@ -123,6 +124,8 @@ export type PrepareOptions = {
   preserveNodeModules?: boolean;
   /** Usually the app's ZIP exclude patterns; same matching syntax. */
   preservePatterns?: readonly string[];
+  /** The app's include overrides: whatever the ZIP ships must not be kept. */
+  includePatterns?: readonly string[];
 };
 
 /** Resets `localDir` to empty, keeping preserved entries. Returns what survived. */
@@ -147,7 +150,7 @@ export function prepareDownloadDir(
     log(`  node_modules will be removed (PRESERVE_NODE_MODULES is off)`);
   }
 
-  const preserved = findPreservedEntries(localDir, patterns);
+  const preserved = findPreservedEntries(localDir, patterns, options.includePatterns);
   const keep = new Set(preserved);
   const ancestors = collectAncestors(preserved);
 
