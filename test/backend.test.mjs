@@ -69,6 +69,40 @@ test("the r2 backend needs no devbox id and defaults its prefix to the app name"
   assert.equal(app.r2.endpoint, "https://acct123.r2.cloudflarestorage.com");
 });
 
+test("a devbox remoteDir never becomes an R2 key prefix", async () => {
+  clearR2Env();
+  setR2Credentials();
+  const { mod } = await withRegistry({
+    defaults: { r2: { bucket: "project-zips", accountId: "acct123" } },
+    apps: {
+      demo: { remoteDir: "/project/sandbox/apps/demo", backend: "r2" },
+      custom: { remoteDir: "/project/sandbox/apps/custom", remotePrefix: "archive/custom", backend: "r2" },
+    },
+  });
+  // The devbox path is a filesystem location, not a key space.
+  assert.equal(mod.resolveApp({ appName: "demo" }).remoteDir, "demo");
+  assert.equal(mod.resolveApp({ appName: "custom" }).remoteDir, "archive/custom");
+});
+
+test("an app switched to r2 keeps its devbox config intact for switching back", async () => {
+  clearR2Env();
+  setR2Credentials();
+  process.env.R2_BUCKET = "project-zips";
+  process.env.R2_ACCOUNT_ID = "acct123";
+  const { mod } = await withRegistry({
+    defaults: { devboxId: "dev1" },
+    apps: { demo: { remoteDir: "/project/sandbox/apps/demo" } },
+  });
+
+  const onR2 = mod.resolveApp({ appName: "demo", backend: "r2" });
+  assert.equal(onR2.remoteDir, "demo");
+  assert.equal(onR2.devboxId, undefined);
+
+  const onDevbox = mod.resolveApp({ appName: "demo", backend: "codesandbox" });
+  assert.equal(onDevbox.remoteDir, "/project/sandbox/apps/demo");
+  assert.equal(onDevbox.devboxId, "dev1");
+});
+
 test("backend precedence: override > app entry > defaults > environment", async () => {
   clearR2Env();
   setR2Credentials();

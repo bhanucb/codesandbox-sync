@@ -5,8 +5,10 @@ import type { BackendKind } from "./storage/types.js";
 
 export type AppEntry = {
   sourceDir: string;
-  /** Devbox directory, or the R2 key prefix; defaults to the app name on R2. */
+  /** Devbox directory. Belongs to the codesandbox backend only. */
   remoteDir?: string;
+  /** R2 key prefix. Defaults to the app name. */
+  remotePrefix?: string;
   downloadDir?: string;
   devboxId?: string;
   backend?: BackendKind;
@@ -204,6 +206,14 @@ function parseAppEntry(name: string, raw: unknown): AppEntry {
   };
   if (typeof remoteDir === "string" && remoteDir.trim().length > 0) {
     entry.remoteDir = remoteDir.trim();
+  }
+  const remotePrefix = obj.remotePrefix;
+  if (remotePrefix !== undefined && typeof remotePrefix !== "string") {
+    throw new Error(`apps."${name}".remotePrefix must be a string`);
+  }
+  if (typeof remotePrefix === "string" && remotePrefix.trim().length > 0) {
+    assertSafeExcludePattern(remotePrefix.trim());
+    entry.remotePrefix = remotePrefix.trim().replace(/^\/+/, "").replace(/\/+$/g, "");
   }
   entry.backend = parseBackend(obj.backend, `apps."${name}".backend`);
   if (typeof obj.downloadDir === "string" && obj.downloadDir.trim().length > 0) {
@@ -440,8 +450,10 @@ export function toResolvedApp(
   if (backend === "r2") {
     return {
       ...base,
-      // A prefix, not a path: objects land at "<prefix>/<app>_<ts>.zip".
-      remoteDir: entry.remoteDir ?? sanitizeAppName(name),
+      // A key prefix, not a path: objects land at "<prefix>/<app>_<ts>.zip".
+      // remoteDir is deliberately ignored — a devbox filesystem path should
+      // not leak into an object store's key space.
+      remoteDir: entry.remotePrefix ?? sanitizeAppName(name),
       r2: requireR2Settings(name, config),
     };
   }
@@ -547,6 +559,7 @@ export function requireToken(): string {
 export type AppInput = {
   sourceDir: string;
   remoteDir?: string;
+  remotePrefix?: string | null;
   downloadDir?: string | null;
   devboxId?: string | null;
   backend?: BackendKind | null;
@@ -576,6 +589,9 @@ export function addApp(name: string, input: AppInput): ResolvedApp {
   };
   if (input.backend) {
     entry.backend = input.backend;
+  }
+  if (input.remotePrefix) {
+    entry.remotePrefix = input.remotePrefix.trim().replace(/^\/+/, "").replace(/\/+$/g, "");
   }
   const backend = resolveBackend(entry, config);
   const remoteDir = input.remoteDir?.trim();
@@ -632,6 +648,16 @@ export function updateApp(name: string, patch: Partial<AppInput>): ResolvedApp {
       delete updated.devboxId;
     } else {
       updated.devboxId = patch.devboxId.trim();
+    }
+  }
+  if (patch.remotePrefix !== undefined) {
+    if (patch.remotePrefix === null || patch.remotePrefix.trim() === "") {
+      delete updated.remotePrefix;
+    } else {
+      updated.remotePrefix = patch.remotePrefix
+        .trim()
+        .replace(/^\/+/, "")
+        .replace(/\/+$/g, "");
     }
   }
   if (patch.backend !== undefined) {

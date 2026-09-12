@@ -25,7 +25,8 @@
     "r2-app": {
       "sourceDir": "/absolute/path/to/r2-app",
       "downloadDir": "/absolute/path/to/r2-app",
-      "backend": "r2"
+      "backend": "r2",
+      "remotePrefix": "r2-app"
     }
   }
 }

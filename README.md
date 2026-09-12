@@ -57,11 +57,16 @@ are, so the registry stays safe to commit.
 | Field | Required | Meaning |
 | --- | --- | --- |
 | `sourceDir` | yes | Directory to zip and upload |
-| `remoteDir` | devbox only | Devbox directory the ZIPs land in; on R2, the key prefix (default: the app name) |
+| `remoteDir` | devbox only | Devbox directory the ZIPs land in; ignored by R2 |
+| `remotePrefix` | no | R2 object key prefix (default: the app name) |
 | `devboxId` | devbox only* | Which devbox to use |
 | `backend` | no | `codesandbox` (default) or `r2` |
 | `downloadDir` | for `download` | Directory that `download` **resets** and extracts into |
 | `exclude` | no | Extra paths kept out of the ZIP |
+
+The two addressing fields are deliberately separate: a devbox path is a
+filesystem location and an R2 prefix is a key space, so an app can carry both
+and switch between backends without either one distorting the other.
 
 \* A devbox id is mandatory and never defaulted. It comes from the app's
 `devboxId`, `defaults.devboxId`, `DEVBOX_ID`, or `--devbox`. The id is the last
@@ -121,7 +126,7 @@ Any stdio MCP client. The path must be absolute.
 | --- | --- |
 | `list_apps` | — |
 | `get_app` | `app_name?`, `path?` |
-| `add_app` | `name`, `source_dir`, `remote_dir?`, `download_dir?`, `devbox_id?`, `backend?`, `exclude?` |
+| `add_app` | `name`, `source_dir`, `remote_dir?`, `remote_prefix?`, `download_dir?`, `devbox_id?`, `backend?`, `exclude?` |
 | `update_app` | `app_name` + any field (`null` clears) |
 | `remove_app` | `app_name` |
 | `upload_app` | `app_name?`, `path?`, `dry_run?` |

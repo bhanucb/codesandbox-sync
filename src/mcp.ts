@@ -153,14 +153,18 @@ server.registerTool(
   {
     title: "Add app",
     description:
-      "Register a new app for syncing. On the codesandbox backend, remote_dir is required unless defaults.remoteRoot is set in apps.json, and a devbox id must come from devbox_id, defaults.devboxId or DEVBOX_ID. On the r2 backend, remote_dir is the object key prefix and defaults to the app name.",
+      "Register a new app for syncing. On the codesandbox backend, remote_dir is required unless defaults.remoteRoot is set in apps.json, and a devbox id must come from devbox_id, defaults.devboxId or DEVBOX_ID. On the r2 backend, none of those apply: objects are keyed by remote_prefix, which defaults to the app name.",
     inputSchema: {
       name: z.string().describe("App name (letters, numbers, hyphens, underscores)"),
       source_dir: z.string().describe("Absolute path to the local project directory"),
       remote_dir: z
         .string()
         .optional()
-        .describe("Devbox directory for uploaded ZIPs, or the R2 key prefix"),
+        .describe("Devbox directory for uploaded ZIPs (codesandbox backend only)"),
+      remote_prefix: z
+        .string()
+        .optional()
+        .describe("R2 object key prefix (r2 backend only; default: the app name)"),
       backend: z
         .enum(["codesandbox", "r2"])
         .optional()
@@ -181,6 +185,7 @@ server.registerTool(
       const app = addApp(args.name, {
         sourceDir: args.source_dir,
         remoteDir: args.remote_dir,
+        remotePrefix: args.remote_prefix,
         downloadDir: args.download_dir,
         devboxId: args.devbox_id,
         backend: args.backend,
@@ -203,6 +208,7 @@ server.registerTool(
       app_name: z.string().describe("Name of the configured app to update"),
       source_dir: z.string().optional(),
       remote_dir: z.string().optional(),
+      remote_prefix: z.string().nullable().optional(),
       download_dir: z.string().nullable().optional(),
       devbox_id: z.string().nullable().optional(),
       backend: z.enum(["codesandbox", "r2"]).nullable().optional(),
@@ -214,6 +220,7 @@ server.registerTool(
       const app = updateApp(args.app_name, {
         sourceDir: args.source_dir,
         remoteDir: args.remote_dir,
+        remotePrefix: args.remote_prefix,
         downloadDir: args.download_dir,
         devboxId: args.devbox_id,
         backend: args.backend,
