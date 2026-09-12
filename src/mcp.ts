@@ -17,7 +17,7 @@ import { downloadApp, listRemoteZips, mtimeToDate, uploadApp } from "./sync.js";
 import type { Logger } from "./zip.js";
 
 // stdout carries JSON-RPC frames; anything that slips through console.log
-// (ours or the CodeSandbox SDK's) must go to stderr instead.
+// (ours or a dependency's) must go to stderr instead.
 console.log = console.error;
 
 loadEnv();
@@ -75,17 +75,15 @@ function describe(app: ResolvedApp): Record<string, unknown> {
   return {
     name: app.name,
     sourceDir: app.sourceDir,
-    backend: app.backend,
-    remoteDir: app.remoteDir,
+    remotePrefix: app.remotePrefix,
     downloadDir: app.downloadDir ?? null,
-    devboxId: app.devboxId ?? null,
     exclude: app.exclude,
     sourceExists: fs.existsSync(app.sourceDir),
   };
 }
 
 const server = new McpServer({
-  name: "codesandbox-sync",
+  name: "project-sync",
   version: "1.0.0",
 });
 
@@ -107,7 +105,7 @@ server.registerTool(
   {
     title: "List configured apps",
     description:
-      "List every app configured for syncing, with its storage backend, local source directory, remote directory or key prefix, and download target.",
+      "List every app configured for syncing, with its local source directory, object key prefix, and download target.",
     inputSchema: {},
     annotations: { readOnlyHint: true },
   },
@@ -134,7 +132,7 @@ server.registerTool(
   {
     title: "Get app config",
     description:
-      "Show the full resolved configuration for one app, including its backend, effective ZIP exclude patterns and devbox id.",
+      "Show the full resolved configuration for one app, including its object key prefix and effective ZIP exclude patterns.",
     inputSchema: appSelector,
     annotations: { readOnlyHint: true },
   },
@@ -153,27 +151,18 @@ server.registerTool(
   {
     title: "Add app",
     description:
-      "Register a new app for syncing. On the codesandbox backend, remote_dir is required unless defaults.remoteRoot is set in apps.json, and a devbox id must come from devbox_id, defaults.devboxId or DEVBOX_ID. On the r2 backend, none of those apply: objects are keyed by remote_prefix, which defaults to the app name.",
+      "Register a new app for syncing to R2. Objects are keyed by remote_prefix, which defaults to the app name.",
     inputSchema: {
       name: z.string().describe("App name (letters, numbers, hyphens, underscores)"),
       source_dir: z.string().describe("Absolute path to the local project directory"),
-      remote_dir: z
-        .string()
-        .optional()
-        .describe("Devbox directory for uploaded ZIPs (codesandbox backend only)"),
       remote_prefix: z
         .string()
         .optional()
-        .describe("R2 object key prefix (r2 backend only; default: the app name)"),
-      backend: z
-        .enum(["codesandbox", "r2"])
-        .optional()
-        .describe("Storage backend for this app (default: defaults.backend, else codesandbox)"),
+        .describe("Object key prefix in the bucket (default: the app name)"),
       download_dir: z
         .string()
         .optional()
         .describe("Local directory that download_app resets and extracts into"),
-      devbox_id: z.string().optional().describe("Per-app devbox id override (codesandbox backend only)"),
       exclude: z
         .array(z.string())
         .optional()
@@ -184,11 +173,8 @@ server.registerTool(
     try {
       const app = addApp(args.name, {
         sourceDir: args.source_dir,
-        remoteDir: args.remote_dir,
         remotePrefix: args.remote_prefix,
         downloadDir: args.download_dir,
-        devboxId: args.devbox_id,
-        backend: args.backend,
         exclude: args.exclude,
       });
       return ok(`✅ Added app "${app.name}" to ${configPath()}:`, describe(app));
@@ -207,11 +193,8 @@ server.registerTool(
     inputSchema: {
       app_name: z.string().describe("Name of the configured app to update"),
       source_dir: z.string().optional(),
-      remote_dir: z.string().optional(),
       remote_prefix: z.string().nullable().optional(),
       download_dir: z.string().nullable().optional(),
-      devbox_id: z.string().nullable().optional(),
-      backend: z.enum(["codesandbox", "r2"]).nullable().optional(),
       exclude: z.array(z.string()).nullable().optional(),
     },
   },
@@ -219,11 +202,8 @@ server.registerTool(
     try {
       const app = updateApp(args.app_name, {
         sourceDir: args.source_dir,
-        remoteDir: args.remote_dir,
         remotePrefix: args.remote_prefix,
         downloadDir: args.download_dir,
-        devboxId: args.devbox_id,
-        backend: args.backend,
         exclude: args.exclude,
       });
       return ok(`✅ Updated app "${app.name}":`, describe(app));
@@ -259,15 +239,15 @@ server.registerTool(
 server.registerTool(
   "upload_app",
   {
-    title: "Upload app to remote",
+    title: "Upload app to R2",
     description:
-      "ZIP an app's source directory (excluding node_modules, .next and configured excludes) and upload it to its configured backend (a CodeSandbox devbox or a Cloudflare R2 bucket), verifying the transfer and pruning old remote ZIPs. Use this when work on a project is finished and should be pushed to the remote.",
+      "ZIP an app's source directory (excluding node_modules, .next and configured excludes) and upload it to the Cloudflare R2 bucket, verifying the transfer and pruning old remote ZIPs. Use this when work on a project is finished and should be pushed to the remote.",
     inputSchema: {
       ...appSelector,
       dry_run: z
         .boolean()
         .optional()
-        .describe("Create the ZIP and report its size without connecting to the remote"),
+        .describe("Create the ZIP and report its size without connecting to R2"),
     },
   },
   async ({ app_name, path: pathHint, dry_run }) => {
@@ -293,9 +273,9 @@ server.registerTool(
 server.registerTool(
   "download_app",
   {
-    title: "Download app from remote",
+    title: "Download app from R2",
     description:
-      "Download the newest ZIP from an app's configured backend and extract it into the app's download_dir. DESTRUCTIVE: download_dir is wiped first. Anything the upload excludes is preserved (node_modules, build output, assistant/editor state), plus .git/info/exclude. Requires confirm: true.",
+      "Download the newest ZIP for an app from R2 and extract it into the app's download_dir. DESTRUCTIVE: download_dir is wiped first. Anything the upload excludes is preserved (node_modules, build output, assistant/editor state), plus .git/info/exclude. Requires confirm: true.",
     inputSchema: {
       ...appSelector,
       confirm: z
@@ -336,7 +316,7 @@ server.registerTool(
   {
     title: "List remote ZIPs",
     description:
-      "List the ZIP files currently present in an app's configured backend, newest first.",
+      "List the ZIP files currently stored in R2 for an app, newest first.",
     inputSchema: appSelector,
     annotations: { readOnlyHint: true },
   },
@@ -351,7 +331,7 @@ server.registerTool(
     try {
       const zips = await listRemoteZips(app, { log });
       return ok(
-        `${zips.length} ZIP(s) for "${app.name}" (${app.backend}):`,
+        `${zips.length} ZIP(s) for "${app.name}":`,
         zips.map((z) => ({
           name: z.name,
           sizeMb: (z.size / (1024 * 1024)).toFixed(2),
@@ -367,7 +347,7 @@ server.registerTool(
 
 async function main(): Promise<void> {
   await server.connect(new StdioServerTransport());
-  console.error(`codesandbox-sync MCP server ready (config: ${configPath()})`);
+  console.error(`project-sync MCP server ready (config: ${configPath()})`);
 }
 
 main().catch((error) => {

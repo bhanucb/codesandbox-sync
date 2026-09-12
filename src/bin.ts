@@ -4,7 +4,6 @@ import path from "path";
 import readline from "readline/promises";
 import { resolveCliApp } from "./cli.js";
 import {
-  defaultRemoteDir,
   listApps,
   loadConfig,
   resolveApp,
@@ -15,13 +14,13 @@ import {
 import { configPath, loadEnv } from "./paths.js";
 import { downloadApp, listRemoteZips, uploadApp } from "./sync.js";
 
-const USAGE = `csb-sync — zip a project to a CodeSandbox devbox, and back
+const USAGE = `psync — zip a project to Cloudflare R2, and back
 
 Usage:
-  csb-sync upload   [--app <name>] [--source <dir>] [--remote <path>] [--dry-run]
-  csb-sync download [--app <name>] [--to <dir>] [--remote <path>] [--yes]
-  csb-sync verify   [--app <name>] [--remote <path>]
-  csb-sync apps
+  psync upload   [--app <name>] [--source <dir>] [--prefix <key>] [--dry-run]
+  psync download [--app <name>] [--to <dir>] [--prefix <key>] [--yes]
+  psync verify   [--app <name>] [--prefix <key>]
+  psync apps
 
 Target resolution, in order:
   --source <dir>   ad-hoc: use this directory, no apps.json entry needed
@@ -31,18 +30,17 @@ Target resolution, in order:
 
 Options:
   --source <dir>   Directory to zip (implies ad-hoc mode)
-  --remote <path>  Devbox directory override
+  --prefix <key>   Object key prefix override (default: the app name)
   --to <dir>       Download target override (download only)
-  --devbox <id>    Devbox id override
-  --dry-run        Build the ZIP and report its size; never contacts the devbox
+  --dry-run        Build the ZIP and report its size; never contacts R2
   --yes, -y        Skip the download confirmation prompt
   --help, -h       Show this help
 
 Examples:
-  cd ~/Work/direct-bidding && csb-sync upload
-  csb-sync upload --app ipa --dry-run
-  csb-sync upload --source . --remote /project/sandbox/apps/scratch
-  csb-sync download --app direct-bidding --yes
+  cd ~/Work/direct-bidding && psync upload
+  psync upload --app ipa --dry-run
+  psync upload --source . --prefix scratch
+  psync download --app direct-bidding --yes
 `;
 
 const BOOLEAN_FLAGS = new Set(["dry-run", "yes", "help"]);
@@ -107,10 +105,8 @@ function adHocApp(sourceDir: string, flags: Flags): ResolvedApp {
     name,
     {
       sourceDir: abs,
-      remoteDir:
-        str(flags, "remote") ?? known?.remoteDir ?? defaultRemoteDir(name, config),
+      remotePrefix: str(flags, "prefix") ?? known?.remotePrefix,
       downloadDir: str(flags, "to") ?? known?.downloadDir ?? abs,
-      devboxId: str(flags, "devbox") ?? known?.devboxId,
       exclude: known?.exclude,
     },
     config
@@ -119,12 +115,10 @@ function adHocApp(sourceDir: string, flags: Flags): ResolvedApp {
 
 function applyOverrides(app: ResolvedApp, flags: Flags): ResolvedApp {
   // One-off overrides apply to registered apps too.
-  const remote = str(flags, "remote");
+  const prefix = str(flags, "prefix");
   const to = str(flags, "to");
-  const devbox = str(flags, "devbox");
-  if (remote) app.remoteDir = remote;
+  if (prefix) app.remotePrefix = prefix;
   if (to) app.downloadDir = to;
-  if (devbox) app.devboxId = devbox;
   return app;
 }
 
@@ -145,17 +139,16 @@ function resolveTarget(argv: readonly string[], flags: Flags): ResolvedApp {
   }
 
   const config = loadConfig();
-  const devboxId = str(flags, "devbox");
   const appName = str(flags, "app");
   if (appName) {
-    return applyOverrides(resolveApp({ appName, config, devboxId }), flags);
+    return applyOverrides(resolveApp({ appName, config }), flags);
   }
 
   try {
-    return applyOverrides(resolveApp({ config, devboxId }), flags);
+    return applyOverrides(resolveApp({ config }), flags);
   } catch (cwdError) {
-    // No app owns this directory — fall back to APP_NAME / the legacy
-    // .env.local block, and surface the original error if that fails too.
+    // No app owns this directory — fall back to APP_NAME, and surface the
+    // original error if that fails too.
     try {
       return applyOverrides(resolveCliApp([...argv]), flags);
     } catch {
@@ -165,9 +158,9 @@ function resolveTarget(argv: readonly string[], flags: Flags): ResolvedApp {
 }
 
 function describeTarget(app: ResolvedApp, adHoc: boolean): void {
-  console.log(`App: ${app.name}${adHoc ? " (ad-hoc)" : ""} — devbox ${app.devboxId}`);
+  console.log(`App: ${app.name}${adHoc ? " (ad-hoc)" : ""}`);
   console.log(`  Source: ${app.sourceDir}`);
-  console.log(`  Remote: ${app.remoteDir}`);
+  console.log(`  Prefix: ${app.remotePrefix}`);
 }
 
 async function confirm(question: string): Promise<boolean> {
@@ -197,7 +190,7 @@ function printApps(): void {
   for (const app of apps) {
     const mark = app.error ? "x" : app.sourceExists ? " " : "!";
     console.log(`${mark} ${app.name.padEnd(width)}  ${app.sourceDir}`);
-    console.log(`  ${" ".repeat(width)}  → ${app.remoteDir}`);
+    console.log(`  ${" ".repeat(width)}  → ${app.remotePrefix}/`);
     if (app.error) {
       console.log(`  ${" ".repeat(width)}  x ${app.error}`);
     }
@@ -267,7 +260,6 @@ async function main(): Promise<void> {
     case "verify": {
       const app = resolveTarget(argv, flags);
       await listRemoteZips(app, { log });
-      console.log(`\n💡 Open: https://codesandbox.io/p/devbox/${app.devboxId}`);
       return;
     }
 

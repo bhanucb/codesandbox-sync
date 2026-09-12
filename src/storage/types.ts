@@ -1,31 +1,28 @@
 import type { Logger } from "../zip.js";
 
-export type BackendKind = "codesandbox" | "r2";
-
 export type RemoteZip = {
   name: string;
-  /** Backend-native locator: a devbox path, or an object key in R2. */
+  /** Object key in the bucket. */
   path: string;
   size: number;
-  /** Seconds or milliseconds since the epoch; see mtimeToDate. */
+  /** Milliseconds since the epoch. */
   mtime: number;
 };
 
 /**
  * The whole of what syncing needs from a remote: list the ZIPs, put one, get
- * one back, drop the stale ones. Everything backend-specific (devbox
- * connections, S3 signing) lives behind this.
+ * one back, drop the stale ones. Everything transport-specific lives behind
+ * this, so sync.ts never learns what it is talking to.
  */
 export interface Storage {
-  readonly kind: BackendKind;
   /** Human-readable target, for logs and results. */
   readonly location: string;
-  /** A URL a human can open to see the stored files, when one exists. */
+  /** A URL a human can open to see the stored files. */
   readonly browseUrl?: string;
 
-  /** ZIPs only, newest first. Returns [] when the target does not exist yet. */
+  /** ZIPs only, newest first. Returns [] when the target is empty. */
   list(log: Logger): Promise<RemoteZip[]>;
-  /** Uploads and verifies; resolves to the stored object's path. */
+  /** Uploads and verifies; resolves to the stored object's key. */
   put(name: string, data: Buffer, log: Logger): Promise<string>;
   get(zip: RemoteZip, log: Logger): Promise<Buffer>;
   remove(zip: RemoteZip, log: Logger): Promise<void>;

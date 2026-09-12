@@ -27,18 +27,16 @@ function proxyUrl(): string | undefined {
   );
 }
 
-function normalizePrefix(prefix: string): string {
+function toKeyPrefix(prefix: string): string {
   const trimmed = prefix.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/g, "");
   return trimmed.length > 0 ? `${trimmed}/` : "";
 }
 
 /**
- * Cloudflare R2 over the S3 API. Unlike the devbox backend there is no machine
- * to boot and no post-write settling: a successful PutObject means the object
- * is readable, so verification is a single HEAD rather than a retry loop.
+ * Cloudflare R2 over the S3 API. A successful PutObject means the object is
+ * readable, so verification is a single HEAD rather than a retry loop.
  */
 export class R2Storage implements Storage {
-  readonly kind = "r2" as const;
   readonly location: string;
   readonly browseUrl: string;
 
@@ -48,7 +46,7 @@ export class R2Storage implements Storage {
 
   constructor(settings: R2Settings, prefix: string) {
     this.bucket = settings.bucket;
-    this.prefix = normalizePrefix(prefix);
+    this.prefix = toKeyPrefix(prefix);
     this.location = `s3://${this.bucket}/${this.prefix}`;
     this.browseUrl = `https://dash.cloudflare.com/${settings.accountId}/r2/default/buckets/${this.bucket}`;
 

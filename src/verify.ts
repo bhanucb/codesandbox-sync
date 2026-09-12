@@ -3,7 +3,7 @@ import { listRemoteZips } from "./sync.js";
 
 async function main(): Promise<void> {
   const app = resolveCliApp();
-  console.log(`App: ${app.name} (${app.backend})`);
+  console.log(`App: ${app.name}`);
   await listRemoteZips(app, { log: (m) => console.log(m) });
 }
 

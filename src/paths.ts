@@ -23,9 +23,9 @@ export function loadEnv(): void {
   envLoaded = true;
 }
 
-/** Path to apps.json; override with CSB_SYNC_CONFIG. */
+/** Path to apps.json; override with SYNC_CONFIG. */
 export function configPath(): string {
   loadEnv();
-  const override = process.env.CSB_SYNC_CONFIG;
+  const override = process.env.SYNC_CONFIG;
   return override ? path.resolve(override) : path.join(REPO_ROOT, "apps.json");
 }

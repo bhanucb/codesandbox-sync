@@ -3,9 +3,9 @@ import { uploadApp } from "./sync.js";
 
 async function main(): Promise<void> {
   const app = resolveCliApp();
-  console.log(`App: ${app.name} (${app.backend})`);
+  console.log(`App: ${app.name}`);
   console.log(`  Source: ${app.sourceDir}`);
-  console.log(`  Remote: ${app.remoteDir}`);
+  console.log(`  Prefix: ${app.remotePrefix}`);
   const dryRun = process.argv.slice(2).includes("--dry-run");
   await uploadApp(app, { log: (m) => console.log(m), dryRun });
 }

@@ -9,7 +9,7 @@ import { LLM_EXCLUDE_PATTERNS } from "../dist/config.js";
 const EXCLUDES = ["node_modules", ".next", ...LLM_EXCLUDE_PATTERNS, "dist"];
 
 function fixture(dirs) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "csb-preserve-"));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "psync-preserve-"));
   for (const d of dirs) {
     fs.mkdirSync(path.join(root, d), { recursive: true });
     fs.writeFileSync(path.join(root, d, "marker"), "x");
@@ -63,7 +63,7 @@ test("buildPreservePatterns always adds local git metadata", () => {
 });
 
 test("creates the directory when it does not exist", () => {
-  const root = path.join(os.tmpdir(), `csb-preserve-new-${Date.now()}`);
+  const root = path.join(os.tmpdir(), `psync-preserve-new-${Date.now()}`);
   assert.deepEqual(prepareDownloadDir(root, { log: () => {} }), []);
   assert.ok(fs.existsSync(root));
   fs.rmSync(root, { recursive: true, force: true });

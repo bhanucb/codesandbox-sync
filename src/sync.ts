@@ -5,7 +5,7 @@ import type { ResolvedApp } from "./config.js";
 import { sanitizeAppName } from "./config.js";
 import { prepareDownloadDir } from "./preserve.js";
 import { createStorage } from "./storage/index.js";
-import type { BackendKind, RemoteZip, Storage } from "./storage/types.js";
+import type { RemoteZip, Storage } from "./storage/types.js";
 import {
   calculateChecksum,
   calculateFileChecksum,
@@ -19,13 +19,10 @@ const noopLog: Logger = () => {};
 export type { RemoteZip } from "./storage/types.js";
 
 type RemoteInfo = {
-  backend: BackendKind;
   /** Human-readable description of where the ZIPs live. */
   remoteLocation: string;
-  /** A URL a human can open, when the backend has one. */
+  /** A URL a human can open. */
   browseUrl?: string;
-  /** Set only for the codesandbox backend. */
-  devboxId?: string;
 };
 
 export type UploadResult = RemoteInfo & {
@@ -56,17 +53,14 @@ function toMb(bytes: number): string {
   return (bytes / (1024 * 1024)).toFixed(2);
 }
 
-/** Devbox mtimes come back in seconds; Date wants milliseconds. */
 export function mtimeToDate(mtime: number): Date {
-  return new Date(mtime < 1e12 ? mtime * 1000 : mtime);
+  return new Date(mtime);
 }
 
-function remoteInfo(app: ResolvedApp, storage: Storage): RemoteInfo {
+function remoteInfo(storage: Storage): RemoteInfo {
   return {
-    backend: storage.kind,
     remoteLocation: storage.location,
     browseUrl: storage.browseUrl,
-    devboxId: app.devboxId,
   };
 }
 
@@ -144,12 +138,7 @@ export async function uploadApp(
 
   if (dryRun) {
     log("Dry run — skipping upload.");
-    return {
-      ...base,
-      backend: app.backend,
-      remoteLocation: app.remoteDir,
-      devboxId: app.devboxId,
-    };
+    return { ...base, remoteLocation: app.remotePrefix };
   }
 
   const storage = createStorage(app);
@@ -162,7 +151,7 @@ export async function uploadApp(
 
     const result: UploadResult = {
       ...base,
-      ...remoteInfo(app, storage),
+      ...remoteInfo(storage),
       remotePath,
     };
     log("\n✅ UPLOAD VERIFIED SUCCESSFULLY!");
@@ -254,7 +243,7 @@ export async function downloadApp(
 
     return {
       app: app.name,
-      ...remoteInfo(app, storage),
+      ...remoteInfo(storage),
       zipFileName: latestFile.name,
       sizeBytes: localBuffer.length,
       sizeMb: toMb(localBuffer.length),

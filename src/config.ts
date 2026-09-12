@@ -1,23 +1,16 @@
 import fs from "fs";
 import path from "path";
 import { configPath, loadEnv } from "./paths.js";
-import type { BackendKind } from "./storage/types.js";
 
 export type AppEntry = {
   sourceDir: string;
-  /** Devbox directory. Belongs to the codesandbox backend only. */
-  remoteDir?: string;
-  /** R2 key prefix. Defaults to the app name. */
+  /** Object key prefix in the bucket. Defaults to the app name. */
   remotePrefix?: string;
   downloadDir?: string;
-  devboxId?: string;
-  backend?: BackendKind;
   exclude?: string[];
 };
 
 /** Everything needed to reach an R2 bucket. Secrets come from the environment. */
-export type BackendOverride = BackendKind | undefined;
-
 export type R2Settings = {
   bucket: string;
   accountId: string;
@@ -28,12 +21,8 @@ export type R2Settings = {
 
 export type SyncConfig = {
   defaults: {
-    devboxId?: string;
-    backend?: BackendKind;
     /** Non-secret R2 settings; credentials stay in the environment. */
     r2?: { bucket?: string; accountId?: string; endpoint?: string };
-    /** Parent directory on the devbox for apps that don't set remoteDir. */
-    remoteRoot?: string;
     exclude?: string[];
     preserveNodeModules?: boolean;
   };
@@ -43,14 +32,10 @@ export type SyncConfig = {
 export type ResolvedApp = {
   name: string;
   sourceDir: string;
-  /** Devbox directory, or the R2 key prefix. */
-  remoteDir: string;
+  /** Objects land at "<remotePrefix>/<app>_<timestamp>.zip". */
+  remotePrefix: string;
   downloadDir?: string;
-  backend: BackendKind;
-  /** Set only for the codesandbox backend. */
-  devboxId?: string;
-  /** Set only for the r2 backend. */
-  r2?: R2Settings;
+  r2: R2Settings;
   exclude: string[];
   /** Undefined when unset in config, so PRESERVE_NODE_MODULES can decide. */
   preserveNodeModules?: boolean;
@@ -61,7 +46,7 @@ const ALWAYS_EXCLUDED = ["node_modules", ".next"] as const;
 /**
  * Dot-directories and dot-files belonging to LLM coding assistants. These hold
  * local session state, transcripts and prompts that have no business being
- * uploaded to a shared devbox, so they are excluded from every app's ZIP.
+ * uploaded to shared storage, so they are excluded from every app's ZIP.
  * Patterns support a trailing `*` (see zipEntryMatchesExclude).
  *
  * Microsoft Copilot is the deliberate exception: nothing here matches
@@ -108,8 +93,6 @@ export function isLlmExcludePattern(pattern: string): boolean {
 export function isCopilotPath(relativePath: string): boolean {
   return /copilot/i.test(relativePath);
 }
-const EMPTY_CONFIG: SyncConfig = { defaults: {}, apps: {} };
-
 export function sanitizeAppName(raw: string): string {
   const sanitized = raw
     .trim()
@@ -174,16 +157,17 @@ function parseExcludeList(value: unknown, label: string): string[] {
   return dedupeStrings(out);
 }
 
-const BACKENDS: readonly BackendKind[] = ["codesandbox", "r2"];
-
-function parseBackend(value: unknown, label: string): BackendKind | undefined {
-  if (value === undefined || value === null || value === "") {
-    return undefined;
+/** A key prefix is a relative, slash-separated path with no traversal. */
+export function normalizePrefix(prefix: string, label: string): string {
+  assertSafeExcludePattern(prefix);
+  const normalized = prefix
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "")
+    .replace(/\/+$/g, "");
+  if (normalized.length === 0) {
+    throw new Error(`${label} cannot be empty`);
   }
-  if (typeof value !== "string" || !BACKENDS.includes(value as BackendKind)) {
-    throw new Error(`${label} must be one of: ${BACKENDS.join(", ")}`);
-  }
-  return value as BackendKind;
+  return normalized;
 }
 
 function parseAppEntry(name: string, raw: unknown): AppEntry {
@@ -192,38 +176,23 @@ function parseAppEntry(name: string, raw: unknown): AppEntry {
   }
   const obj = raw as Record<string, unknown>;
   const sourceDir = obj.sourceDir;
-  const remoteDir = obj.remoteDir;
   if (typeof sourceDir !== "string" || sourceDir.trim().length === 0) {
     throw new Error(`apps."${name}".sourceDir is required`);
   }
-  // remoteDir is optional: the r2 backend defaults it to the app name, and
-  // toResolvedApp requires it only when the resolved backend is codesandbox.
-  if (remoteDir !== undefined && typeof remoteDir !== "string") {
-    throw new Error(`apps."${name}".remoteDir must be a string`);
-  }
-  const entry: AppEntry = {
-    sourceDir: path.resolve(sourceDir.trim()),
-  };
-  if (typeof remoteDir === "string" && remoteDir.trim().length > 0) {
-    entry.remoteDir = remoteDir.trim();
-  }
+  const entry: AppEntry = { sourceDir: path.resolve(sourceDir.trim()) };
+
   const remotePrefix = obj.remotePrefix;
   if (remotePrefix !== undefined && typeof remotePrefix !== "string") {
     throw new Error(`apps."${name}".remotePrefix must be a string`);
   }
   if (typeof remotePrefix === "string" && remotePrefix.trim().length > 0) {
-    assertSafeExcludePattern(remotePrefix.trim());
-    entry.remotePrefix = remotePrefix.trim().replace(/^\/+/, "").replace(/\/+$/g, "");
+    entry.remotePrefix = normalizePrefix(
+      remotePrefix.trim(),
+      `apps."${name}".remotePrefix`
+    );
   }
-  entry.backend = parseBackend(obj.backend, `apps."${name}".backend`);
   if (typeof obj.downloadDir === "string" && obj.downloadDir.trim().length > 0) {
     entry.downloadDir = path.resolve(obj.downloadDir.trim());
-  }
-  if (entry.backend === undefined) {
-    delete entry.backend;
-  }
-  if (typeof obj.devboxId === "string" && obj.devboxId.trim().length > 0) {
-    entry.devboxId = obj.devboxId.trim();
   }
   const exclude = parseExcludeList(obj.exclude, `apps."${name}".exclude`);
   if (exclude.length > 0) {
@@ -235,7 +204,7 @@ function parseAppEntry(name: string, raw: unknown): AppEntry {
 export function loadConfig(): SyncConfig {
   const file = configPath();
   if (!fs.existsSync(file)) {
-    return { defaults: { ...EMPTY_CONFIG.defaults }, apps: {} };
+    return { defaults: {}, apps: {} };
   }
 
   let raw: unknown;
@@ -251,21 +220,15 @@ export function loadConfig(): SyncConfig {
 
   const obj = raw as Record<string, unknown>;
   const defaultsRaw = obj.defaults;
-  if (defaultsRaw !== undefined && (defaultsRaw === null || typeof defaultsRaw !== "object" || Array.isArray(defaultsRaw))) {
+  if (
+    defaultsRaw !== undefined &&
+    (defaultsRaw === null || typeof defaultsRaw !== "object" || Array.isArray(defaultsRaw))
+  ) {
     throw new Error(`${file}: "defaults" must be an object`);
   }
   const d = (defaultsRaw ?? {}) as Record<string, unknown>;
   const defaults: SyncConfig["defaults"] = {};
-  if (typeof d.devboxId === "string" && d.devboxId.trim().length > 0) {
-    defaults.devboxId = d.devboxId.trim();
-  }
-  if (typeof d.remoteRoot === "string" && d.remoteRoot.trim().length > 0) {
-    defaults.remoteRoot = d.remoteRoot.trim().replace(/\/+$/g, "");
-  }
-  const backend = parseBackend(d.backend, `${file}: defaults.backend`);
-  if (backend) {
-    defaults.backend = backend;
-  }
+
   if (d.r2 !== undefined) {
     if (d.r2 === null || typeof d.r2 !== "object" || Array.isArray(d.r2)) {
       throw new Error(`${file}: "defaults.r2" must be an object`);
@@ -282,6 +245,7 @@ export function loadConfig(): SyncConfig {
       defaults.r2 = r2;
     }
   }
+
   const defaultExclude = parseExcludeList(d.exclude, `${file}: defaults.exclude`);
   if (defaultExclude.length > 0) {
     defaults.exclude = defaultExclude;
@@ -291,7 +255,10 @@ export function loadConfig(): SyncConfig {
   }
 
   const appsRaw = obj.apps;
-  if (appsRaw !== undefined && (appsRaw === null || typeof appsRaw !== "object" || Array.isArray(appsRaw))) {
+  if (
+    appsRaw !== undefined &&
+    (appsRaw === null || typeof appsRaw !== "object" || Array.isArray(appsRaw))
+  ) {
     throw new Error(`${file}: "apps" must be an object keyed by app name`);
   }
   const apps: Record<string, AppEntry> = {};
@@ -327,60 +294,9 @@ export function resolveExcludes(entry: AppEntry, config: SyncConfig): string[] {
   ]);
 }
 
-export function resolveDevboxId(
-  entry: AppEntry,
-  config: SyncConfig
-): string | undefined {
-  loadEnv();
-  return entry.devboxId || config.defaults.devboxId || process.env.DEVBOX_ID;
-}
-
-/** Nothing that targets a CodeSandbox environment is defaulted in code. */
-export function requireDevboxId(
-  name: string,
-  entry: AppEntry,
-  config: SyncConfig
-): string {
-  const devboxId = resolveDevboxId(entry, config);
-  if (!devboxId) {
-    throw new Error(
-      `No devbox id for "${name}". Set "devboxId" on the app or "defaults.devboxId" in apps.json, or DEVBOX_ID in the environment. Find it in the devbox URL: https://codesandbox.io/p/devbox/<devbox-id>`
-    );
-  }
-  return devboxId;
-}
-
-/** Remote directory for a new app; never guessed from a built-in path. */
-export function defaultRemoteDir(name: string, config: SyncConfig): string {
-  const root = config.defaults.remoteRoot;
-  if (!root) {
-    throw new Error(
-      `No remote directory for "${name}". Pass one explicitly, or set "defaults.remoteRoot" in apps.json (for example "/project/sandbox/apps") to derive it from the app name.`
-    );
-  }
-  return `${root}/${name}`;
-}
-
-/** Which backend an app syncs through; codesandbox unless told otherwise. */
-export function resolveBackend(entry: AppEntry, config: SyncConfig): BackendKind {
-  loadEnv();
-  const fromEnv = process.env.SYNC_BACKEND?.trim();
-  if (fromEnv && !BACKENDS.includes(fromEnv as BackendKind)) {
-    throw new Error(
-      `SYNC_BACKEND must be one of: ${BACKENDS.join(", ")} (got "${fromEnv}")`
-    );
-  }
-  return (
-    entry.backend ??
-    config.defaults.backend ??
-    (fromEnv as BackendKind | undefined) ??
-    "codesandbox"
-  );
-}
-
 /**
- * R2 credentials live in the environment only; apps.json carries the bucket
- * and account id so the registry stays safe to commit.
+ * Bucket and account id may live in apps.json, so the registry stays useful on
+ * its own; the key pair never does, so the registry stays safe to commit.
  */
 export function requireR2Settings(name: string, config: SyncConfig): R2Settings {
   loadEnv();
@@ -410,7 +326,7 @@ export function requireR2Settings(name: string, config: SyncConfig): R2Settings 
 
   if (missing.length > 0) {
     throw new Error(
-      `App "${name}" uses the r2 backend but is missing: ${missing.join(", ")}. Set them in .env.local.`
+      `App "${name}" cannot reach R2 — missing: ${missing.join(", ")}. Set them in .env.local.`
     );
   }
 
@@ -422,46 +338,19 @@ export function requireR2Settings(name: string, config: SyncConfig): R2Settings 
   return { bucket, accountId, endpoint, accessKeyId, secretAccessKey };
 }
 
-/** The devbox backend cannot guess where files go; R2 falls back to the name. */
-function requireRemoteDir(name: string, entry: AppEntry): string {
-  if (!entry.remoteDir) {
-    throw new Error(
-      `App "${name}" has no remoteDir — set one with update_app, or add "defaults.remoteRoot" to apps.json`
-    );
-  }
-  return entry.remoteDir;
-}
-
 export function toResolvedApp(
   name: string,
   entry: AppEntry,
   config: SyncConfig
 ): ResolvedApp {
-  const backend = resolveBackend(entry, config);
-  const base = {
+  return {
     name,
     sourceDir: entry.sourceDir,
+    remotePrefix: entry.remotePrefix ?? sanitizeAppName(name),
     downloadDir: entry.downloadDir,
-    backend,
+    r2: requireR2Settings(name, config),
     exclude: resolveExcludes(entry, config),
     preserveNodeModules: config.defaults.preserveNodeModules,
-  };
-
-  if (backend === "r2") {
-    return {
-      ...base,
-      // A key prefix, not a path: objects land at "<prefix>/<app>_<ts>.zip".
-      // remoteDir is deliberately ignored — a devbox filesystem path should
-      // not leak into an object store's key space.
-      remoteDir: entry.remotePrefix ?? sanitizeAppName(name),
-      r2: requireR2Settings(name, config),
-    };
-  }
-
-  return {
-    ...base,
-    remoteDir: requireRemoteDir(name, entry),
-    devboxId: requireDevboxId(name, entry, config),
   };
 }
 
@@ -474,10 +363,6 @@ export type ResolveOptions = {
   appName?: string;
   path?: string;
   config?: SyncConfig;
-  /** Explicit devbox id (e.g. --devbox); wins over config and environment. */
-  devboxId?: string;
-  /** Explicit backend (e.g. --backend); wins over config and environment. */
-  backend?: BackendKind;
 };
 
 /**
@@ -493,11 +378,9 @@ export function resolveApp(options: ResolveOptions = {}): ResolvedApp {
     const entry = config.apps[options.appName];
     if (!entry) {
       const known = names.length > 0 ? names.join(", ") : "(none configured)";
-      throw new Error(
-        `Unknown app "${options.appName}". Configured apps: ${known}`
-      );
+      throw new Error(`Unknown app "${options.appName}". Configured apps: ${known}`);
     }
-    return toResolvedApp(options.appName, withOverrides(entry, options), config);
+    return toResolvedApp(options.appName, entry, config);
   }
 
   if (names.length === 0) {
@@ -531,38 +414,13 @@ export function resolveApp(options: ResolveOptions = {}): ResolvedApp {
       `Path ${hint} matches multiple apps: ${matches.join(", ")}. Pass app_name explicitly.`
     );
   }
-  return toResolvedApp(best, withOverrides(config.apps[best], options), config);
-}
-
-function withOverrides(entry: AppEntry, options: ResolveOptions): AppEntry {
-  let out = entry;
-  if (options.devboxId) {
-    out = { ...out, devboxId: options.devboxId };
-  }
-  if (options.backend) {
-    out = { ...out, backend: options.backend };
-  }
-  return out;
-}
-
-export function requireToken(): string {
-  loadEnv();
-  const token = process.env.CSB_API_KEY || process.env.CODESANDBOX_TOKEN;
-  if (!token) {
-    throw new Error(
-      "Missing CodeSandbox token: set CSB_API_KEY (or CODESANDBOX_TOKEN) in .env.local"
-    );
-  }
-  return token;
+  return toResolvedApp(best, config.apps[best], config);
 }
 
 export type AppInput = {
   sourceDir: string;
-  remoteDir?: string;
   remotePrefix?: string | null;
   downloadDir?: string | null;
-  devboxId?: string | null;
-  backend?: BackendKind | null;
   exclude?: string[] | null;
 };
 
@@ -584,28 +442,15 @@ export function addApp(name: string, input: AppInput): ResolvedApp {
     throw new Error(`App "${appName}" already exists — use update_app to modify it`);
   }
 
-  const entry: AppEntry = {
-    sourceDir: validateSourceDir(input.sourceDir),
-  };
-  if (input.backend) {
-    entry.backend = input.backend;
-  }
+  const entry: AppEntry = { sourceDir: validateSourceDir(input.sourceDir) };
   if (input.remotePrefix) {
-    entry.remotePrefix = input.remotePrefix.trim().replace(/^\/+/, "").replace(/\/+$/g, "");
-  }
-  const backend = resolveBackend(entry, config);
-  const remoteDir = input.remoteDir?.trim();
-  if (remoteDir) {
-    entry.remoteDir = remoteDir.replace(/\/+$/g, "");
-  } else if (backend === "codesandbox") {
-    // R2 derives its prefix from the app name; a devbox needs a real path.
-    entry.remoteDir = defaultRemoteDir(appName, config).replace(/\/+$/g, "");
+    entry.remotePrefix = normalizePrefix(
+      input.remotePrefix,
+      `remotePrefix for "${appName}"`
+    );
   }
   if (input.downloadDir) {
     entry.downloadDir = path.resolve(input.downloadDir.trim());
-  }
-  if (input.devboxId) {
-    entry.devboxId = input.devboxId.trim();
   }
   const exclude = parseExcludeList(input.exclude ?? undefined, `exclude for "${appName}"`);
   if (exclude.length > 0) {
@@ -629,42 +474,21 @@ export function updateApp(name: string, patch: Partial<AppInput>): ResolvedApp {
   if (patch.sourceDir !== undefined) {
     updated.sourceDir = validateSourceDir(patch.sourceDir);
   }
-  if (patch.remoteDir !== undefined) {
-    const remoteDir = patch.remoteDir.trim().replace(/\/+$/g, "");
-    if (!remoteDir) {
-      throw new Error("remoteDir cannot be empty");
+  if (patch.remotePrefix !== undefined) {
+    if (patch.remotePrefix === null || patch.remotePrefix.trim() === "") {
+      delete updated.remotePrefix;
+    } else {
+      updated.remotePrefix = normalizePrefix(
+        patch.remotePrefix,
+        `remotePrefix for "${name}"`
+      );
     }
-    updated.remoteDir = remoteDir;
   }
   if (patch.downloadDir !== undefined) {
     if (patch.downloadDir === null || patch.downloadDir.trim() === "") {
       delete updated.downloadDir;
     } else {
       updated.downloadDir = path.resolve(patch.downloadDir.trim());
-    }
-  }
-  if (patch.devboxId !== undefined) {
-    if (patch.devboxId === null || patch.devboxId.trim() === "") {
-      delete updated.devboxId;
-    } else {
-      updated.devboxId = patch.devboxId.trim();
-    }
-  }
-  if (patch.remotePrefix !== undefined) {
-    if (patch.remotePrefix === null || patch.remotePrefix.trim() === "") {
-      delete updated.remotePrefix;
-    } else {
-      updated.remotePrefix = patch.remotePrefix
-        .trim()
-        .replace(/^\/+/, "")
-        .replace(/\/+$/g, "");
-    }
-  }
-  if (patch.backend !== undefined) {
-    if (patch.backend === null) {
-      delete updated.backend;
-    } else {
-      updated.backend = patch.backend;
     }
   }
   if (patch.exclude !== undefined) {
@@ -694,13 +518,11 @@ export function removeApp(name: string): void {
 export type AppListing = {
   name: string;
   sourceDir: string;
-  remoteDir?: string;
+  remotePrefix: string;
   downloadDir?: string;
-  backend?: BackendKind;
-  devboxId?: string;
   exclude?: string[];
   sourceExists: boolean;
-  /** Set when the entry cannot be resolved, e.g. no devbox id. */
+  /** Set when the entry cannot be resolved, e.g. missing R2 credentials. */
   error?: string;
 };
 
@@ -714,16 +536,12 @@ export function listApps(): AppListing[] {
       const listing: AppListing = {
         name,
         sourceDir: entry.sourceDir,
-        remoteDir: entry.remoteDir,
+        remotePrefix: entry.remotePrefix ?? sanitizeAppName(name),
         downloadDir: entry.downloadDir,
         sourceExists: fs.existsSync(entry.sourceDir),
       };
       try {
-        const resolved = toResolvedApp(name, entry, config);
-        listing.backend = resolved.backend;
-        listing.remoteDir = resolved.remoteDir;
-        listing.devboxId = resolved.devboxId;
-        listing.exclude = resolved.exclude;
+        listing.exclude = toResolvedApp(name, entry, config).exclude;
       } catch (error) {
         listing.error = error instanceof Error ? error.message : String(error);
       }
