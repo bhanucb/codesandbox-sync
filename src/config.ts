@@ -1,4 +1,5 @@
 import fs from "fs";
+import os from "os";
 import path from "path";
 import { configPath } from "./paths.js";
 
@@ -30,13 +31,26 @@ export type Transport = "auto" | "api" | "browser";
 
 export const TRANSPORTS: readonly Transport[] = ["auto", "api", "browser"];
 
-/** A browser psync can attach to: Chrome started with --remote-debugging-port. */
+/** The Chrome psync drives for the dashboard route. */
 export type BrowserSettings = {
-  /** The DevTools endpoint, e.g. http://localhost:9222. */
+  /** A running Chrome's DevTools endpoint; attached to when it answers. */
   cdpUrl: string;
+  /** Profile psync starts Chrome from otherwise; it keeps the sign-in. */
+  profileDir: string;
+  /** Keep that Chrome's window off-screen. A sign-in always gets a visible one. */
+  hidden: boolean;
+  /** Chrome binary, when it is not in the usual place. */
+  executable?: string;
 };
 
 export const DEFAULT_CDP_URL = "http://localhost:9222";
+
+export function defaultProfileDir(): string {
+  if (process.platform === "win32") {
+    return path.join(process.env.LOCALAPPDATA || os.homedir(), "psync-chrome");
+  }
+  return path.join(os.homedir(), ".psync-chrome");
+}
 
 export type SyncConfig = {
   defaults: {
@@ -307,9 +321,25 @@ export function loadConfig(): SyncConfig {
     if (d.browser === null || typeof d.browser !== "object" || Array.isArray(d.browser)) {
       throw new Error(`${file}: "defaults.browser" must be an object`);
     }
-    const cdpUrl = (d.browser as Record<string, unknown>).cdpUrl;
-    if (typeof cdpUrl === "string" && cdpUrl.trim().length > 0) {
-      defaults.browser = { cdpUrl: cdpUrl.trim() };
+    const b = d.browser as Record<string, unknown>;
+    const browser: Partial<BrowserSettings> = {};
+    if (typeof b.cdpUrl === "string" && b.cdpUrl.trim().length > 0) {
+      browser.cdpUrl = b.cdpUrl.trim();
+    }
+    if (typeof b.profileDir === "string" && b.profileDir.trim().length > 0) {
+      browser.profileDir = path.resolve(b.profileDir.trim());
+    }
+    if (b.hidden !== undefined) {
+      if (typeof b.hidden !== "boolean") {
+        throw new Error(`${file}: "defaults.browser.hidden" must be true or false`);
+      }
+      browser.hidden = b.hidden;
+    }
+    if (typeof b.executable === "string" && b.executable.trim().length > 0) {
+      browser.executable = path.resolve(b.executable.trim());
+    }
+    if (Object.keys(browser).length > 0) {
+      defaults.browser = browser;
     }
   }
 
@@ -456,11 +486,25 @@ export function resolveTransport(config: SyncConfig): Transport {
   return config.defaults.transport ?? "auto";
 }
 
-/** PSYNC_CDP_URL wins over defaults.browser.cdpUrl; localhost:9222 otherwise. */
+/**
+ * PSYNC_CDP_URL, PSYNC_BROWSER_PROFILE, PSYNC_BROWSER_HIDDEN and PSYNC_CHROME
+ * win over defaults.browser; then localhost:9222, a psync-chrome profile,
+ * hidden, and Chrome's usual install location.
+ */
 export function resolveBrowser(config: SyncConfig): BrowserSettings {
-  const cdpUrl =
-    process.env.PSYNC_CDP_URL?.trim() || config.defaults.browser?.cdpUrl || DEFAULT_CDP_URL;
-  return { cdpUrl: cdpUrl.replace(/\/+$/, "") };
+  const b = config.defaults.browser;
+  const cdpUrl = process.env.PSYNC_CDP_URL?.trim() || b?.cdpUrl || DEFAULT_CDP_URL;
+  const profile = process.env.PSYNC_BROWSER_PROFILE?.trim();
+  const hiddenEnv = process.env.PSYNC_BROWSER_HIDDEN?.trim().toLowerCase();
+  const executable = process.env.PSYNC_CHROME?.trim() || b?.executable;
+  return {
+    cdpUrl: cdpUrl.replace(/\/+$/, ""),
+    profileDir: profile ? path.resolve(profile) : b?.profileDir ?? defaultProfileDir(),
+    hidden: hiddenEnv
+      ? !["0", "false", "no", "off"].includes(hiddenEnv)
+      : b?.hidden ?? true,
+    ...(executable ? { executable: path.resolve(executable) } : {}),
+  };
 }
 
 export function toResolvedApp(

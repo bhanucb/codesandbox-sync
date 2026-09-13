@@ -203,29 +203,43 @@ test("transport and browser settings come from apps.json, with the environment o
   const plain = mod.resolveApp({ appName: "demo" });
   assert.equal(plain.transport, "auto");
   assert.equal(plain.browser.cdpUrl, "http://localhost:9222");
+  assert.equal(plain.browser.hidden, true);
+  assert.match(plain.browser.profileDir, /psync-chrome$/);
+  assert.equal(plain.browser.executable, undefined);
 
   const { mod: configured } = await withRegistry({
     defaults: {
       r2: { bucket: "b", accountId: "a" },
       transport: "browser",
-      browser: { cdpUrl: "http://127.0.0.1:9333/" },
+      browser: { cdpUrl: "http://127.0.0.1:9333/", profileDir: "chrome-profile", hidden: false },
     },
     apps: { demo: {} },
   });
   const app = configured.resolveApp({ appName: "demo" });
   assert.equal(app.transport, "browser");
   assert.equal(app.browser.cdpUrl, "http://127.0.0.1:9333", "trailing slash dropped");
+  assert.equal(app.browser.hidden, false);
+  assert.ok(path.isAbsolute(app.browser.profileDir), "profile dir is resolved");
   assert.equal(app.r2Location.bucket, "b", "the browser route needs no keys");
 
   process.env.PSYNC_TRANSPORT = "api";
   process.env.PSYNC_CDP_URL = "http://localhost:9444";
+  process.env.PSYNC_BROWSER_HIDDEN = "true";
+  process.env.PSYNC_BROWSER_PROFILE = "env-profile";
+  process.env.PSYNC_CHROME = "tools/chrome.exe";
   try {
     const overridden = configured.resolveApp({ appName: "demo" });
     assert.equal(overridden.transport, "api");
     assert.equal(overridden.browser.cdpUrl, "http://localhost:9444");
+    assert.equal(overridden.browser.hidden, true);
+    assert.equal(path.basename(overridden.browser.profileDir), "env-profile");
+    assert.equal(path.basename(overridden.browser.executable), "chrome.exe");
   } finally {
+    delete process.env.PSYNC_CHROME;
     delete process.env.PSYNC_TRANSPORT;
     delete process.env.PSYNC_CDP_URL;
+    delete process.env.PSYNC_BROWSER_HIDDEN;
+    delete process.env.PSYNC_BROWSER_PROFILE;
   }
 
   await assert.rejects(

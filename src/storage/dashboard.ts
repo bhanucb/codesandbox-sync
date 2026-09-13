@@ -1,32 +1,54 @@
+import { spawn } from "child_process";
 import fs from "fs";
+import path from "path";
 import { chromium, type Browser, type Page } from "playwright-core";
 import type { BrowserSettings, R2Location } from "../config.js";
 import type { Logger } from "../zip.js";
 import { dashboardUrl, toKeyPrefix } from "./r2.js";
 import type { RemoteZip, Storage } from "./types.js";
 
-/**
- * How to start a browser psync can drive. A dedicated --user-data-dir is not
- * optional: Chrome refuses remote debugging on its default profile.
- */
-export function browserHint(cdpUrl: string): string {
-  let port = "9222";
-  try {
-    port = new URL(cdpUrl).port || port;
-  } catch {
-    // keep the default
-  }
-  const launch =
+/** How long a human gets to sign in (2FA included) or tick a bot check. */
+const HUMAN_MINUTES = 10;
+/** Cloudflare's managed challenge clears itself for a normal browser in seconds. */
+const CHALLENGE_GRACE_MS = 30_000;
+
+/** Where Google Chrome usually is; PSYNC_CHROME or defaults.browser.executable wins. */
+export function findChrome(executable?: string): string | undefined {
+  const candidates =
     process.platform === "win32"
-      ? `start chrome --remote-debugging-port=${port} --user-data-dir=%LOCALAPPDATA%\\psync-chrome https://dash.cloudflare.com`
+      ? [
+          process.env.ProgramFiles,
+          process.env["ProgramFiles(x86)"],
+          process.env.LOCALAPPDATA,
+        ]
+          .filter((base): base is string => Boolean(base))
+          .map((base) => path.join(base, "Google", "Chrome", "Application", "chrome.exe"))
       : process.platform === "darwin"
-        ? `open -na "Google Chrome" --args --remote-debugging-port=${port} --user-data-dir="$HOME/.psync-chrome" https://dash.cloudflare.com`
-        : `google-chrome --remote-debugging-port=${port} --user-data-dir="$HOME/.psync-chrome" https://dash.cloudflare.com`;
+        ? ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"]
+        : ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium", "/usr/bin/chromium-browser"];
+  for (const candidate of [executable, ...candidates]) {
+    if (candidate && fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+function portOf(cdpUrl: string): string {
+  try {
+    return new URL(cdpUrl).port || "9222";
+  } catch {
+    return "9222";
+  }
+}
+
+/** What to do when Chrome cannot be started. */
+export function launchHint(settings: Pick<BrowserSettings, "cdpUrl" | "profileDir">): string {
   return [
-    `No browser is listening at ${cdpUrl}. Start one, sign in to the dashboard, and keep it open:`,
-    `  ${launch}`,
-    "The separate --user-data-dir is required: Chrome refuses remote debugging on its default profile.",
-    "The sign-in persists in that profile, so this is a one-time step per machine.",
+    "Could not start Google Chrome. Install it (or point PSYNC_CHROME / defaults.browser.executable at it),",
+    "or start it yourself and psync will attach to it:",
+    `  chrome --remote-debugging-port=${portOf(settings.cdpUrl)} --user-data-dir="${settings.profileDir}" https://dash.cloudflare.com`,
+    "(or add R2 keys to apps.json to use the S3 endpoint instead).",
   ].join("\n");
 }
 
@@ -34,7 +56,7 @@ export function browserHint(cdpUrl: string): string {
 export async function browserAvailable(cdpUrl: string): Promise<boolean> {
   try {
     const response = await fetch(`${cdpUrl.replace(/\/+$/, "")}/json/version`, {
-      signal: AbortSignal.timeout(2000),
+      signal: AbortSignal.timeout(1500),
     });
     return response.ok;
   } catch {
@@ -107,12 +129,22 @@ function mainText(page: Page): Promise<string> {
   );
 }
 
+type PageState = "ready" | "sign-in" | "challenge" | "missing";
+
 /**
- * Cloudflare R2 through the dashboard, driven in a browser the human has
- * already signed in to. This is for networks that block the S3 endpoint but
- * allow the dashboard: the bytes travel the same allowed route a person's
- * clicks would take. The browser is one the human started with remote
- * debugging on; psync attaches, never launches, and never types credentials.
+ * Cloudflare R2 through the dashboard, driven in Google Chrome. This is for
+ * networks that block the S3 endpoint but allow the dashboard: the bytes
+ * travel the same allowed route a person's clicks would take.
+ *
+ * psync starts Chrome itself — plainly, the way a person would from a
+ * shortcut, with remote debugging on and a profile of its own — keeps the
+ * window off-screen, attaches over the debugging port, and closes Chrome when
+ * done. The first run on a machine finds no session in that profile: a visible
+ * window opens and the human signs in; psync never types credentials, and
+ * never answers a bot check either — if Cloudflare asks for a human, it shows
+ * the window and waits for one. The profile keeps the session afterwards.
+ * If a Chrome with remote debugging is already up, psync attaches to that one
+ * instead and leaves it running.
  */
 export class DashboardStorage implements Storage {
   readonly location: string;
@@ -121,9 +153,12 @@ export class DashboardStorage implements Storage {
   private readonly prefix: string;
   private readonly bucketUrl: string;
   private readonly folderUrl: string;
-  private readonly cdpUrl: string;
+  private readonly settings: BrowserSettings;
   private browser?: Browser;
   private page?: Page;
+  /** True when psync started this Chrome, and so closes it. */
+  private launched = false;
+  private visible = false;
 
   constructor(
     r2: Pick<R2Location, "bucket" | "accountId">,
@@ -133,7 +168,7 @@ export class DashboardStorage implements Storage {
     this.prefix = toKeyPrefix(prefix);
     this.bucketUrl = dashboardUrl(r2.accountId, r2.bucket);
     this.folderUrl = dashboardUrl(r2.accountId, r2.bucket, prefix);
-    this.cdpUrl = settings.cdpUrl;
+    this.settings = settings;
     this.location = `dashboard:${r2.bucket}/${this.prefix}`;
     this.browseUrl = this.folderUrl;
   }
@@ -146,35 +181,148 @@ export class DashboardStorage implements Storage {
     if (this.page) {
       return this.page;
     }
-    if (!(await browserAvailable(this.cdpUrl))) {
-      throw new Error(browserHint(this.cdpUrl));
+    if (await browserAvailable(this.settings.cdpUrl)) {
+      log(`  Attaching to the browser at ${this.settings.cdpUrl}…`);
+      this.launched = false;
+      this.visible = true;
+      return this.attach();
     }
-    log(`  Attaching to the browser at ${this.cdpUrl}…`);
-    this.browser = await chromium.connectOverCDP(this.cdpUrl);
+    await this.launch(!this.settings.hidden, log);
+    return this.attach();
+  }
+
+  private async attach(): Promise<Page> {
+    this.browser = await chromium.connectOverCDP(this.settings.cdpUrl);
     const context = this.browser.contexts()[0] ?? (await this.browser.newContext());
-    this.page = await context.newPage();
+    const blank = context.pages().find((p) => p.url() === "about:blank");
+    this.page = blank ?? (await context.newPage());
     return this.page;
   }
 
   /**
-   * Loads a dashboard page and waits until it is either usable or clearly
-   * not: the sign-in screen (the human's job) or a missing object.
+   * Starts Chrome as a person would, so it looks like what it is: a normal
+   * browser. Not headless (Cloudflare's bot check turns HeadlessChrome away)
+   * and not minimized (a minimized page gets throttled): "hidden" is a real
+   * window placed off-screen, where the page runs exactly as on screen.
    */
-  private async goto(url: string, log: Logger): Promise<Page> {
-    const page = await this.open(log);
-    await page.goto(url, { waitUntil: "domcontentloaded" });
+  private async launch(visible: boolean, log: Logger): Promise<void> {
+    const { profileDir, cdpUrl } = this.settings;
+    const executable = findChrome(this.settings.executable);
+    if (!executable) {
+      throw new Error(launchHint(this.settings));
+    }
+    log(`  Starting Chrome ${visible ? "" : "off-screen "}with profile ${profileDir}…`);
+    fs.mkdirSync(profileDir, { recursive: true });
+    const args = [
+      `--remote-debugging-port=${portOf(cdpUrl)}`,
+      `--user-data-dir=${profileDir}`,
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--window-size=1200,900",
+      visible ? "--window-position=80,60" : "--window-position=-32000,-32000",
+      "about:blank",
+    ];
+    try {
+      const child = spawn(executable, args, { detached: true, stdio: "ignore" });
+      child.on("error", () => undefined);
+      child.unref();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`${launchHint(this.settings)}\n  ${message}`);
+    }
 
+    const deadline = Date.now() + 30_000;
+    while (!(await browserAvailable(cdpUrl))) {
+      if (Date.now() > deadline) {
+        throw new Error(
+          `Chrome started but nothing answered at ${cdpUrl} within 30s. Is another Chrome already using the profile ${profileDir} without remote debugging? Close it and re-run.\n${launchHint(this.settings)}`
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+    this.launched = true;
+    this.visible = visible;
+  }
+
+  /** Reads which of the known page states is showing, waiting for one. */
+  private async settle(page: Page, timeout = 60_000): Promise<PageState> {
     const ready = page.getByRole("button", { name: /^(upload|download)$/i }).first();
     const signIn = page.getByText(/Sign in to Cloudflare/i).first();
+    const challenge = page
+      .getByText(/Performing security verification|Verify you are human|Just a moment/i)
+      .first();
     const missing = page.getByText(/Failed to find/i).first();
-    await ready.or(signIn).or(missing).first().waitFor({ timeout: 60_000 });
-
+    await ready.or(signIn).or(challenge).or(missing).first().waitFor({ timeout });
     if (await signIn.isVisible().catch(() => false)) {
-      throw new Error(
-        `The browser at ${this.cdpUrl} is showing the Cloudflare sign-in page. Sign in there — it stays signed in — then re-run.`
-      );
+      return "sign-in";
+    }
+    if (await challenge.isVisible().catch(() => false)) {
+      return "challenge";
     }
     if (await missing.isVisible().catch(() => false)) {
+      return "missing";
+    }
+    return "ready";
+  }
+
+  /** Like settle, but gives a managed challenge time to clear on its own. */
+  private async settleThroughChallenge(page: Page): Promise<PageState> {
+    const deadline = Date.now() + CHALLENGE_GRACE_MS;
+    let state = await this.settle(page);
+    while (state === "challenge" && Date.now() < deadline) {
+      await page.waitForTimeout(2000);
+      state = await this.settle(page, 15_000).catch(() => "challenge" as const);
+    }
+    return state;
+  }
+
+  /**
+   * Loads a dashboard page. A sign-in page or a bot check that wants a
+   * person is not an error: the human gets a visible window and up to ten
+   * minutes, and the profile remembers the outcome.
+   */
+  private async goto(url: string, log: Logger): Promise<Page> {
+    let page = await this.open(log);
+    await page.goto(url, { waitUntil: "domcontentloaded" });
+    let state = await this.settleThroughChallenge(page);
+
+    if (state === "sign-in" || state === "challenge") {
+      if (!this.visible) {
+        log(`  ${state === "sign-in" ? "Not signed in yet" : "Cloudflare wants a human check"} — opening a Chrome window…`);
+        await this.close(log);
+        await this.launch(true, log);
+        page = await this.attach();
+        await page.goto(url, { waitUntil: "domcontentloaded" });
+        state = await this.settleThroughChallenge(page);
+      }
+      if (state === "sign-in" || state === "challenge") {
+        log(
+          state === "sign-in"
+            ? `  Sign in to Cloudflare in the Chrome window (waiting up to ${HUMAN_MINUTES} minutes; the profile remembers it)…`
+            : `  Tick "Verify you are human" in the Chrome window (waiting up to ${HUMAN_MINUTES} minutes)…`
+        );
+        const ready = page.getByRole("button", { name: /^(upload|download)$/i }).first();
+        try {
+          await ready.waitFor({ timeout: HUMAN_MINUTES * 60_000 });
+        } catch {
+          throw new Error(
+            `Timed out after ${HUMAN_MINUTES} minutes waiting for you in the Chrome window. Re-run when ready.`
+          );
+        }
+        log("  ✓ Thanks — carrying on");
+        if (!page.url().startsWith(url.split("?")[0])) {
+          await page.goto(url, { waitUntil: "domcontentloaded" });
+          state = await this.settleThroughChallenge(page);
+        } else {
+          state = "ready";
+        }
+      }
+    }
+
+    if (state === "sign-in" || state === "challenge") {
+      throw new Error("Cloudflare is still asking for you; re-run once the page shows the bucket.");
+    }
+    if (state === "missing") {
       throw new Error(`The dashboard has no such object: ${url}`);
     }
     return page;
@@ -254,6 +402,10 @@ export class DashboardStorage implements Storage {
     return key;
   }
 
+  /**
+   * The bytes go to Playwright's own temporary location, never the browser's
+   * Downloads folder, and that temporary file is removed once read.
+   */
   async get(zip: RemoteZip, log: Logger): Promise<Buffer> {
     const page = await this.goto(this.detailsUrl(zip.path), log);
     log(`  Downloading ${zip.name} through the dashboard…`);
@@ -292,14 +444,29 @@ export class DashboardStorage implements Storage {
     await dialog.waitFor({ state: "hidden", timeout: 30_000 });
   }
 
-  close(log: Logger): void {
-    // Only our own tab and the debugging session go away; the human's
-    // browser, and their sign-in, stay exactly as they were.
-    const page = this.page;
-    const browser = this.browser;
+  /**
+   * A Chrome psync started is closed outright. One it merely attached to
+   * keeps running: only psync's own tab and debugging session go away.
+   */
+  async close(log: Logger): Promise<void> {
+    const { page, browser, launched } = this;
     this.page = undefined;
     this.browser = undefined;
-    void page?.close().catch(() => undefined);
-    void browser?.close().catch(() => undefined);
+    this.launched = false;
+    if (!browser) {
+      return;
+    }
+    try {
+      if (launched) {
+        const session = await browser.newBrowserCDPSession();
+        await session.send("Browser.close");
+        log("  ✓ Closed Chrome");
+      } else {
+        await page?.close();
+      }
+    } catch {
+      // Teardown only; the work is done.
+    }
+    await browser.close().catch(() => undefined);
   }
 }

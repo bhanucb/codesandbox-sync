@@ -1,6 +1,6 @@
 import type { ResolvedApp } from "../config.js";
 import type { Logger } from "../zip.js";
-import { browserAvailable, browserHint, DashboardStorage } from "./dashboard.js";
+import { DashboardStorage } from "./dashboard.js";
 import { NotS3ResponseError, R2Storage } from "./r2.js";
 import type { Storage } from "./types.js";
 
@@ -22,7 +22,7 @@ async function runWith<T>(
   try {
     return await run(storage);
   } finally {
-    storage.close(log);
+    await storage.close(log);
   }
 }
 
@@ -30,9 +30,9 @@ async function runWith<T>(
  * Runs `run` against the app's storage, choosing the transport:
  *
  * - "api": the S3 endpoint, and nothing else.
- * - "browser": the dashboard, in a browser the human has signed in to.
+ * - "browser": the dashboard, in Chrome.
  * - "auto" (default): the S3 endpoint; but when it is blocked, or no keys
- *   are configured, and a debuggable browser is up, the dashboard instead.
+ *   are configured, the dashboard instead.
  *
  * The fallback re-runs `run` from the start against the second transport.
  * Every caller's first storage call is a list or a put, so nothing local has
@@ -53,11 +53,11 @@ export async function withStorage<T>(
     r2 = createStorage(app, "api");
   } catch (error) {
     // No keys. On the machine the browser route exists for, that is expected.
-    if (transport === "auto" && (await browserAvailable(app.browser.cdpUrl))) {
-      log(`\nNo R2 keys configured — using the dashboard in the browser at ${app.browser.cdpUrl}.`);
-      return runWith(createStorage(app, "browser"), log, run);
+    if (transport !== "auto") {
+      throw error;
     }
-    throw error;
+    log("\nNo R2 keys configured — going through the dashboard in Chrome.");
+    return runWith(createStorage(app, "browser"), log, run);
   }
 
   try {
@@ -66,12 +66,7 @@ export async function withStorage<T>(
     if (transport !== "auto" || !(error instanceof NotS3ResponseError)) {
       throw error;
     }
-    if (!(await browserAvailable(app.browser.cdpUrl))) {
-      throw new Error(
-        `${error.message}\n  4. Or go through the dashboard in your browser (psync --browser).\n     ${browserHint(app.browser.cdpUrl).split("\n").join("\n     ")}`
-      );
-    }
-    log(`\n⚠️  The S3 endpoint is blocked here — switching to the dashboard in the browser at ${app.browser.cdpUrl}.`);
+    log("\n⚠️  The S3 endpoint is blocked here — going through the dashboard in Chrome instead.");
     return runWith(createStorage(app, "browser"), log, run);
   }
 }

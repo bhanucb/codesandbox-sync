@@ -30,6 +30,6 @@ export interface Storage {
   put(name: string, data: Buffer, log: Logger, localPath?: string): Promise<string>;
   get(zip: RemoteZip, log: Logger): Promise<Buffer>;
   remove(zip: RemoteZip, log: Logger): Promise<void>;
-  /** Releases any connection. Must not throw. */
-  close(log: Logger): void;
+  /** Releases any connection, or closes a browser it started. Must not throw. */
+  close(log: Logger): void | Promise<void>;
 }

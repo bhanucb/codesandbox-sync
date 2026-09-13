@@ -105,37 +105,43 @@ None of these offline commands need R2 keys. Only `upload`, `download` and
 ### Through the browser
 
 When the S3 endpoint is blocked but the Cloudflare dashboard is reachable,
-psync can do the whole transfer through the dashboard, in a browser **you**
-have signed in to. It attaches to that browser; it never launches one and
-never types credentials.
+psync does the whole transfer through the dashboard, in Google Chrome. It
+starts Chrome itself — plainly, as a shortcut would, with a profile of its
+own — keeps the window off-screen, clicks Download / Upload / Delete the way
+you would, and closes Chrome when it is done. It never types credentials and
+never answers a bot check: if Cloudflare asks for a human, the window comes
+on screen and psync waits for you.
 
-One-time setup per machine — start Chrome with remote debugging and its own
-profile (Chrome refuses debugging on the default profile), then sign in:
-
-```bash
-# Windows
-start chrome --remote-debugging-port=9222 --user-data-dir=%LOCALAPPDATA%\psync-chrome https://dash.cloudflare.com
-# macOS
-open -na "Google Chrome" --args --remote-debugging-port=9222 --user-data-dir="$HOME/.psync-chrome" https://dash.cloudflare.com
-```
-
-The sign-in persists in that profile. Keep the window open while syncing, then:
+**The first run on a machine** finds no session in that profile, so a Chrome
+window opens and psync waits (up to ten minutes) for you to sign in to
+Cloudflare. The profile keeps the session; every later run is silent.
 
 ```bash
 psync upload --app my-app --browser
 psync download --app my-app --browser
 ```
 
-Without `--browser`, psync tries the S3 endpoint first and switches to the
+Without `--browser`, psync tries the S3 endpoint first and goes through the
 browser on its own when the endpoint answers with a block page, or when no
 keys are configured at all — so the corporate machine needs no keys in its
 `apps.json`. Pin the behaviour with `defaults.transport` (`auto`, `api`,
-`browser`) and point at a different debugging port with
-`defaults.browser.cdpUrl`; `PSYNC_TRANSPORT` and `PSYNC_CDP_URL` override both.
+`browser`); `PSYNC_TRANSPORT` overrides it.
 
-If the window shows the sign-in page, psync stops and says so. Uploads
-through the dashboard are verified by size on the object's page, downloads by
-checksum like any other; the dashboard caps a single upload at 300 MB.
+`defaults.browser` tunes the rest: `profileDir` (default: `psync-chrome`
+under `%LOCALAPPDATA%` or `~/.psync-chrome`), `hidden` (default `true`; set
+`false` to watch it work), `executable` (Chrome's binary, when it is not in
+the usual place), and `cdpUrl` (default `http://localhost:9222`).
+If a Chrome is already listening there — one you started with
+`--remote-debugging-port=9222 --user-data-dir=<profileDir>` — psync attaches
+to it instead and leaves it running. `PSYNC_BROWSER_PROFILE`,
+`PSYNC_BROWSER_HIDDEN`, `PSYNC_CHROME` and `PSYNC_CDP_URL` override the four.
+
+Downloads go to a temporary file that is deleted once extracted; nothing lands
+in the browser's Downloads folder. Uploads are verified by size on the
+object's page, downloads by checksum like any other. The dashboard caps a
+single upload at 300 MB. Headless Chrome is not an option: the dashboard's
+bot check turns it away, which is why the window is off-screen rather than
+absent.
 
 Target order: `--source`, `--app`, current directory, then `defaults.app`.
 Overrides for one run: `--prefix`, `--to`.

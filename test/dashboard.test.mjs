@@ -2,8 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { dashboardUrl } from "../dist/storage/r2.js";
 import {
-  browserHint,
   DashboardStorage,
+  findChrome,
+  launchHint,
   parseFolderListing,
   parseModified,
   parseSize,
@@ -63,23 +64,31 @@ test("the folder listing keeps ZIPs only, keyed under the prefix, newest first",
   assert.equal(zips[1].mtime, 1789255609780);
 });
 
-test("the storage attaches lazily, so building it never needs a browser", () => {
+test("the storage attaches lazily, so building it never needs a browser", async () => {
   const storage = new DashboardStorage(
     { bucket: "project-zips", accountId: "acct" },
     "ipa",
-    { cdpUrl: "http://localhost:1" }
+    { cdpUrl: "http://localhost:1", profileDir: "/tmp/psync-chrome", hidden: true }
   );
   assert.equal(storage.location, "dashboard:project-zips/ipa/");
   assert.equal(
     storage.browseUrl,
     "https://dash.cloudflare.com/acct/r2/default/buckets/project-zips?prefix=ipa%2F"
   );
-  storage.close(() => {});
+  await storage.close(() => {});
 });
 
-test("a missing browser is explained with the exact launch command", () => {
-  const hint = browserHint("http://localhost:9333");
+test("a Chrome that will not start is explained with the manual launch command", () => {
+  const hint = launchHint({ cdpUrl: "http://localhost:9333", profileDir: "C:\\p\\chrome" });
   assert.match(hint, /--remote-debugging-port=9333/);
-  assert.match(hint, /--user-data-dir/);
+  assert.ok(hint.includes('--user-data-dir="C:\\p\\chrome"'), "names the profile to reuse");
   assert.match(hint, /dash\.cloudflare\.com/);
+  assert.match(hint, /R2 keys/);
+});
+
+test("an explicit Chrome binary wins, but only when it exists", () => {
+  const found = findChrome();
+  assert.ok(found === undefined || found.length > 0, "either a path or nothing");
+  assert.equal(findChrome("/definitely/not/here/chrome"), found, "a missing override is ignored");
+  assert.equal(findChrome(process.execPath), process.execPath, "an existing override is taken as-is");
 });

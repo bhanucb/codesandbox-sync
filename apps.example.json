@@ -9,7 +9,7 @@
     "app": "my-app",
     "exclude": ["dist", "coverage"],
     "transport": "auto",
-    "browser": { "cdpUrl": "http://localhost:9222" }
+    "browser": { "cdpUrl": "http://localhost:9222", "profileDir": "/absolute/path/for/psync-chrome-profile", "hidden": true, "executable": "/optional/path/to/chrome" }
   },
   "apps": {
     "my-app": {
