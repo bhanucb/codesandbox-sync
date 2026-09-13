@@ -81,6 +81,21 @@ psync verify --app my-app
 psync apps
 ```
 
+**When R2 is unreachable** (a proxy blocks the S3 endpoint), `download` can take
+the ZIP from somewhere else instead of the bucket — everything after the fetch
+is identical, so the reset and preserve rules still apply:
+
+```bash
+psync download --app my-app --file ~/Downloads/my-app_1789.zip
+psync download --app my-app --url "https://…/my-app_1789.zip?signature=…"
+```
+
+`--file` extracts a ZIP already on disk — one you pulled through the dashboard,
+an approved transfer, or a USB drive. `--url` fetches first, but only from a
+self-contained link (no browser session): a link that needs your login returns
+HTML, and the command says so and points you back to `--file`. Both work with
+`npm run download -- --app my-app --file <zip>` too.
+
 Target order: `--source`, `--app`, current directory, then `defaults.app`.
 Overrides for one run: `--prefix`, `--to`.
 

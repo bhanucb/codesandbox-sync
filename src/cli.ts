@@ -6,7 +6,7 @@ import {
 } from "./config.js";
 
 /** Flags the `npm run …` entry points understand. */
-const VALUE_FLAGS = new Set(["app"]);
+const VALUE_FLAGS = new Set(["app", "file", "url", "to"]);
 const BOOLEAN_FLAGS = new Set(["dry-run", "yes", "help"]);
 
 /**

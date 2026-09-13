@@ -171,6 +171,148 @@ export async function uploadApp(
   }
 }
 
+/**
+ * The download tail, shared by every source: reset the directory (preserving
+ * what the upload omits), write the ZIP, verify, extract. `sourceLabel` is
+ * whatever produced the bytes — a bucket, a local file, a URL — so the result
+ * and logs read the same regardless.
+ */
+async function extractIntoApp(
+  app: ResolvedApp,
+  zipName: string,
+  buffer: Buffer,
+  sourceLabel: string,
+  log: Logger
+): Promise<Omit<DownloadResult, "remoteZips" | "browseUrl">> {
+  const localDir = app.downloadDir;
+  if (!localDir) {
+    throw new Error(
+      `App "${app.name}" has no downloadDir configured — set one with update_app first`
+    );
+  }
+
+  log(`\nPreparing download directory...`);
+  const preserved = prepareDownloadDir(localDir, {
+    log,
+    preserveNodeModules: app.preserveNodeModules,
+    // Whatever the upload leaves out must survive the reset — the ZIP cannot
+    // restore it. What `include` puts back into the ZIP must not be preserved,
+    // or stale files would sit under the extracted ones.
+    preservePatterns: app.exclude,
+    includePatterns: app.include,
+  });
+
+  const localPath = path.join(localDir, zipName);
+  log(`\nSaving to ${localDir}...`);
+  fs.writeFileSync(localPath, buffer);
+
+  log(`  Verifying file...`);
+  const localBuffer = fs.readFileSync(localPath);
+  const checksum = calculateChecksum(localBuffer);
+  log(`  Checksum: ${checksum}`);
+
+  let extracted = false;
+  log(`\nUnzipping to ${localDir}...`);
+  try {
+    new AdmZip(localPath).extractAllTo(localDir, true);
+    extracted = true;
+    log(`  ✓ Extracted successfully`);
+    fs.unlinkSync(localPath);
+    log(`  ✓ Removed ${zipName}`);
+  } catch (error) {
+    log(`  ⚠️  Unzip failed: ${error instanceof Error ? error.message : String(error)}`);
+    log(`  ZIP file kept at: ${localPath}`);
+  }
+
+  log("\n✅ EXTRACT SUCCESSFUL!");
+  log(`   From: ${sourceLabel}`);
+  log(`   Location: ${localDir}`);
+  log(`   Size: ${toMb(localBuffer.length)} MB`);
+  log(`   Checksum: ${checksum}`);
+
+  return {
+    app: app.name,
+    remoteLocation: sourceLabel,
+    zipFileName: zipName,
+    sizeBytes: localBuffer.length,
+    sizeMb: toMb(localBuffer.length),
+    checksum,
+    extractedTo: localDir,
+    extracted,
+    preserved,
+  };
+}
+
+/**
+ * Extract a ZIP already on disk — one the R2 API could not deliver, so it was
+ * fetched some other way (the dashboard, an approved transfer, a USB drive).
+ * The extract is identical to a normal download; only the source differs.
+ */
+export async function importZipFile(
+  app: ResolvedApp,
+  zipPath: string,
+  options: { log?: Logger } = {}
+): Promise<DownloadResult> {
+  const log = options.log ?? noopLog;
+  const resolved = path.resolve(zipPath);
+  if (!fs.existsSync(resolved)) {
+    throw new Error(`ZIP not found: ${resolved}`);
+  }
+  if (!resolved.toLowerCase().endsWith(".zip")) {
+    throw new Error(`Not a .zip file: ${resolved}`);
+  }
+  log(`Importing ${resolved}`);
+  const buffer = fs.readFileSync(resolved);
+  const base = await extractIntoApp(app, path.basename(resolved), buffer, resolved, log);
+  return { ...base, remoteZips: [] };
+}
+
+/**
+ * Fetch a ZIP from an arbitrary URL, then extract it. Meant for a dashboard
+ * download link on a reachable host when the S3 endpoint is blocked. Only
+ * self-contained URLs work — anything relying on the browser's session cookies
+ * will not.
+ */
+export async function downloadFromUrl(
+  app: ResolvedApp,
+  url: string,
+  options: { log?: Logger } = {}
+): Promise<DownloadResult> {
+  const log = options.log ?? noopLog;
+  log(`Fetching ${url}`);
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(
+      `HTTP ${response.status} ${response.statusText} fetching the URL. If this is a dashboard link, it may have expired or need your browser session — download the file and use --file instead.`
+    );
+  }
+  const contentType = response.headers.get("content-type") ?? "";
+  if (/text\/html/i.test(contentType)) {
+    throw new Error(
+      `The URL returned HTML, not a ZIP (content-type: ${contentType}). A proxy or login page answered instead of the file — download it in the browser and use --file instead.`
+    );
+  }
+  const buffer = Buffer.from(await response.arrayBuffer());
+  const name = zipNameFromUrl(url, app);
+  const base = await extractIntoApp(app, name, buffer, url, log);
+  return { ...base, remoteZips: [] };
+}
+
+/** A sensible on-disk name for a fetched ZIP: the URL's filename, else app_<ts>. */
+function zipNameFromUrl(url: string, app: ResolvedApp): string {
+  try {
+    const pathname = new URL(url).pathname;
+    const last = pathname.split("/").filter(Boolean).pop() ?? "";
+    const decoded = decodeURIComponent(last);
+    if (decoded.toLowerCase().endsWith(".zip")) {
+      return decoded;
+    }
+  } catch {
+    // fall through
+  }
+  return `${sanitizeAppName(app.name)}_${Date.now()}.zip`;
+}
+
 export async function downloadApp(
   app: ResolvedApp,
   options: { log?: Logger } = {}

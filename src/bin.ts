@@ -12,13 +12,14 @@ import {
   type ResolvedApp,
 } from "./config.js";
 import { configPath } from "./paths.js";
-import { downloadApp, listRemoteZips, uploadApp } from "./sync.js";
+import { downloadApp, downloadFromUrl, importZipFile, listRemoteZips, uploadApp } from "./sync.js";
 
 const USAGE = `psync — zip a project to Cloudflare R2, and back
 
 Usage:
   psync upload   [--app <name>] [--source <dir>] [--prefix <key>] [--dry-run]
   psync download [--app <name>] [--to <dir>] [--prefix <key>] [--yes]
+                 [--file <zip>] [--url <link>]
   psync verify   [--app <name>] [--prefix <key>]
   psync apps
 
@@ -32,6 +33,8 @@ Options:
   --source <dir>   Directory to zip (implies ad-hoc mode)
   --prefix <key>   Object key prefix override (default: the app name)
   --to <dir>       Download target override (download only)
+  --file <zip>     Extract a ZIP already on disk instead of fetching from R2
+  --url <link>     Fetch a ZIP from a URL, then extract (self-contained links only)
   --dry-run        Build the ZIP and report its size; never contacts R2
   --yes, -y        Skip the download confirmation prompt
   --help, -h       Show this help
@@ -41,6 +44,7 @@ Examples:
   psync upload --app ipa --dry-run
   psync upload --source . --prefix scratch
   psync download --app direct-bidding --yes
+  psync download --app ipa --file ~/Downloads/ipa_1789.zip   # R2 blocked here
 `;
 
 const BOOLEAN_FLAGS = new Set(["dry-run", "yes", "help"]);
@@ -252,7 +256,15 @@ async function main(): Promise<void> {
           return;
         }
       }
-      await downloadApp(app, { log });
+      const file = str(flags, "file");
+      const url = str(flags, "url");
+      if (file) {
+        await importZipFile(app, file, { log });
+      } else if (url) {
+        await downloadFromUrl(app, url, { log });
+      } else {
+        await downloadApp(app, { log });
+      }
       return;
     }
 
