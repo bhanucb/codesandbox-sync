@@ -1,99 +1,105 @@
-# Handoff: pull an R2-hosted project onto this Windows machine
+# Handoff: end-to-end zip sync on this Windows machine (R2 API is blocked here)
 
 > Paste this whole file as your first message to a fresh Claude Code session
 > **running on the Windows machine**. It is self-contained — you should not need
-> the original conversation.
+> the original conversation. Your job is to make **upload → download → extract**
+> work end to end from this machine.
 
 ---
 
 ## Context (read first)
 
-`project-sync` (CLI `psync`, also an MCP server) zips a local project, uploads
-it to a **Cloudflare R2** bucket, and downloads + extracts it back. It exists to
-move source between two machines that share no network.
+`project-sync` (CLI `psync`, also an MCP server) zips a local project, stores it
+in a **Cloudflare R2** bucket, and pulls it back down and extracts it. It exists
+to move source between two machines that share no network.
 
-- **Repo:** `bhanucb/codesandbox-sync` on GitHub. **Work branch:** `r2-storage-backend`
-  (already pushed to `origin`). The package/CLI was renamed from `codesandbox-sync`
-  to `project-sync`; the GitHub repo still carries the old name.
+- **Repo:** `bhanucb/codesandbox-sync` on GitHub. **Work branch:** `r2-storage-backend`.
+  The package/CLI was renamed from `codesandbox-sync` to `project-sync`; the
+  GitHub repo still carries the old name.
 - **Two machines:**
-  - A **Mac**, where the R2 S3 API works fully (uploads/downloads verified).
-  - **This corporate Windows machine**, where the R2 API is **blocked** (details below).
+  - A **Mac**, where the R2 **S3 API works fully** — there, plain `psync upload`
+    and `psync download` just work. (Verified.)
+  - **This Windows machine**, where the R2 S3 API is **blocked** (see below).
 - **R2 account id:** `9a407f3de26fca4e66bd1a515d87bb41` · **bucket:** `project-zips`
 - **Bucket in the dashboard:**
   `https://dash.cloudflare.com/9a407f3de26fca4e66bd1a515d87bb41/r2/default/buckets/project-zips`
-- Objects are keyed `<app>/<app>_<timestamp>.zip` (e.g. `ipa/ipa_1789255609780.zip`).
-  Example app: **`ipa`**.
+- **Object key scheme:** `<app>/<app>_<timestamp>.zip`
+  (e.g. `ipa/ipa_1789255609780.zip`). Higher timestamp = newer. Example app: **`ipa`**.
+
+### Why this machine is special
+
+- `*.r2.cloudflarestorage.com` (the S3 API host) is **blocked by a Blue Coat /
+  Symantec ProxySG** gateway: `HTTP 503`, `<TITLE>URL Blocked</TITLE>`, header
+  `P3P: CP="CAO PSA OUR"`. **TLS is intercepted** here.
+- **`dash.cloudflare.com` is reachable**, and uploading/downloading files through
+  the R2 **dashboard UI works**.
+
+**The key idea:** on this machine the CLI cannot talk to R2 at all. So the CLI
+does only the **local** work — build a zip, extract a zip — and the **browser
+(dashboard)** carries the bytes to and from the bucket, in both directions.
+
+| Step | Where it runs | How |
+| --- | --- | --- |
+| Build zip | CLI, no network | `psync upload --dry-run` → writes `output\<app>_<ts>.zip` |
+| Push zip to R2 | Browser (dashboard) | upload the built zip into the `<app>/` folder |
+| Pull zip from R2 | Browser (dashboard) | download the newest `<app>_*.zip` |
+| Extract zip | CLI, no network | `psync download --file <zip>` |
+
+You (Claude) can drive the dashboard yourself via the **Claude-in-Chrome**
+tools (they include a file-upload capability), using the human's already-logged-in
+Cloudflare session — or the human can click, whichever is more reliable.
 
 ---
 
 ## Requirement
 
-On this Windows machine, get the **latest zip for an app from R2 and extract it**
-into that app's local `downloadDir`, even though the R2 API endpoint is blocked
-here. The dashboard download path *is* reachable, so the intended flow is:
-
-1. Claude (this session) drives the browser to the R2 bucket and downloads the
-   latest `<app>_<timestamp>.zip`, **or** the human clicks download.
-2. `psync` extracts that zip into the app's `downloadDir` with the correct
-   preserve rules.
+From this Windows machine, achieve a full round trip despite the API block:
+**build → upload to R2 (via dashboard) → download from R2 (via dashboard) →
+extract**, with extraction preserving whatever the upload excluded.
 
 ---
 
 ## What was done so far (on the `r2-storage-backend` branch)
 
-- Added a Cloudflare **R2 backend** behind a small `Storage` interface
-  (`src/storage/`), then **removed the old CodeSandbox backend entirely** and
-  renamed everything to `project-sync` / `psync`.
-- **`apps.json` is the only config file** (gitignored — machine-specific). It holds
-  the R2 connection in `defaults.r2` (`bucket`, `accountId`, `accessKeyId`,
-  `secretAccessKey`) plus the apps. Real env vars (`R2_BUCKET`, `R2_ACCOUNT_ID`,
-  `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT`) override. `dotenv`,
-  `.env.local` and `.env.example` were removed. `SYNC_CONFIG` env var can point at
-  an alternate registry.
-- `remotePrefix` per app (default: app name); `include` list overrides exclusions
-  (e.g. to ship `node_modules`).
-- **`download --file <zip>` and `download --url <link>`**: extract a zip fetched
-  out-of-band (dashboard, USB, approved transfer) using the *same* reset/preserve
-  logic as a normal download. Also works as `npm run download -- --app <name> --file <zip>`.
-- Corporate-network support: `HTTPS_PROXY` is wired into the S3 client; a non-S3
-  (HTML) response now yields a clear diagnostic instead of an opaque
-  `XML parse error: expected >`.
-- **Verified on the Mac:** upload → download → checksum round trip for `ipa` works.
-
-### Diagnosed state of this Windows machine
-
-- `*.r2.cloudflarestorage.com` is **blocked by a Blue Coat / Symantec ProxySG**
-  web gateway: `HTTP 503`, `<TITLE>URL Blocked</TITLE>`, header `P3P: CP="CAO PSA OUR"`.
-- **TLS is intercepted** here (curl reported `CRYPT_E_NO_REVOCATION_CHECK` via schannel).
-- **`dash.cloudflare.com` is reachable**, and downloading a file through the R2
-  dashboard UI **works**. So: API path blocked, dashboard path allowed.
+- Added a Cloudflare **R2 backend** behind a `Storage` interface (`src/storage/`),
+  removed the old CodeSandbox backend, renamed everything to `project-sync` / `psync`.
+- **`apps.json` is the only config file** (gitignored). It holds the R2 connection
+  in `defaults.r2` (`bucket`, `accountId`, `accessKeyId`, `secretAccessKey`) plus
+  the apps. Env vars (`R2_*`) override. `dotenv`/`.env*` were removed. `SYNC_CONFIG`
+  can point at an alternate registry.
+- `remotePrefix` per app (default: app name); `include` list can override exclusions.
+- **`upload --dry-run`** builds the zip in `output\` and reports its size **without
+  touching the network** — this is how you produce a zip to upload by hand here.
+- **`download --file <zip>` / `download --url <link>`** extract a zip fetched
+  out-of-band, using the *same* reset/preserve logic as a real download.
+- Corporate-network support: `HTTPS_PROXY` wired into the S3 client; a non-S3
+  (HTML) response gives a clear diagnostic instead of `XML parse error: expected >`.
+- **Verified on the Mac:** upload → download → checksum round trip works.
 
 ---
 
-## What needs to be done (here, on Windows)
+## Setup (do this first)
 
-### 1. Set up the tool
-
-SSH is configured on this machine, so clone over SSH (if the repo is already
-cloned, just `git checkout r2-storage-backend && git pull`):
+### 1. Get the code (SSH is configured on this machine)
 
 ```bash
 git clone git@github.com:bhanucb/codesandbox-sync.git project-sync && cd project-sync
 git checkout r2-storage-backend
 npm install && npm run build
+npm test            # expect 38 passing
 ```
 
-### 2. Use the existing `apps.json` (already copied over, with the keys)
+(If already cloned: `git checkout r2-storage-backend && git pull && npm install && npm run build`.)
 
-**`apps.json` is already present on this machine and contains the real R2
-credentials** (`defaults.r2` — bucket, accountId, accessKeyId, secretAccessKey).
-**Reuse it — do not recreate it from `apps.example.json`, and never commit it**
-(it is gitignored).
+### 2. Use the existing `apps.json` (already copied here, with the keys)
 
-The one thing to fix: it was copied from the Mac, so its `sourceDir` /
-`downloadDir` are **Mac paths** (`/Users/bhanu/...`) that don't exist here. For
-the app you're pulling (e.g. `ipa`), update those to **Windows paths**, keeping
-the `defaults.r2` credentials untouched:
+**`apps.json` is already present and contains the real R2 credentials**
+(`defaults.r2`). **Reuse it — do not recreate it from `apps.example.json`, and
+never commit it** (gitignored).
+
+It was copied from the Mac, so its `sourceDir` / `downloadDir` are **Mac paths**.
+For the app you're syncing (e.g. `ipa`), change those to **Windows paths**,
+leaving `defaults.r2` untouched:
 
 ```json
 "ipa": {
@@ -102,78 +108,122 @@ the `defaults.r2` credentials untouched:
 }
 ```
 
-Then run `psync apps` — it should list the apps with the corrected paths and no
-`x` (unusable) markers.
+Then `psync apps` — it should list the apps with the corrected paths and no `x`
+markers.
 
-> Known papercut: even `download --file` currently resolves R2 settings, so the
-> `defaults.r2` block must be present for the extract to run — it already is, so
-> nothing to do. (Optional: make `requireR2Settings` lazy so `--file`/`--url`
-> work with no credentials.)
+### 3. Optional: link the CLI
 
-### 3. Get the zip and extract it
+`npm link` makes `psync` global. Otherwise use `node dist\bin.js …` or
+`npm run …` in place of `psync` below.
 
-**The intended way — Claude drives the browser (this session, on Windows):**
-- Ensure the **Chrome extension is connected** so this session can drive your real
-  Chrome (the one already logged into Cloudflare — uses your live session, nothing
-  stored).
-- Open the bucket, download the newest `ipa_*.zip`, then extract:
+---
+
+## DOWNLOAD — R2 → this machine, end to end
+
+**Step A — get the newest zip via the dashboard.** Drive Chrome (extension
+connected) or have the human click:
+1. Open the bucket URL (above).
+2. Open the **`ipa/`** folder.
+3. Sort by **Last Modified** (or pick the highest timestamp in the filename).
+4. **Download** the newest `ipa_<timestamp>.zip` → it lands in `Downloads`.
+
+**Step B — extract it** (resets `downloadDir`, keeps whatever the upload
+excluded — `node_modules`, build output — plus `.git/info/exclude`):
 
 ```bash
 psync download --app ipa --file "C:\Users\<you>\Downloads\ipa_<timestamp>.zip" --yes
 ```
 
-(`--yes` skips the prompt; `download` **resets** `downloadDir` before extracting,
-keeping whatever the upload excluded — node_modules, build output — plus
-`.git/info/exclude`.)
+Confirm `downloadDir` now holds the project, preserved dirs are intact, and the
+printed checksum matches.
 
-**If `--url` turns out viable** (see verification), you can instead:
+---
+
+## UPLOAD — this machine → R2, end to end
+
+**Step A — build the zip locally (no network):**
+
 ```bash
-psync download --app ipa --url "<self-contained signed link>" --yes
+psync upload --app ipa --dry-run
 ```
-Behind the proxy this direct fetch may need `HTTPS_PROXY`, and
-`NODE_EXTRA_CA_CERTS` (corporate root CA) because TLS is intercepted here.
 
-### Guardrails — do NOT
+It prints `ZIP created: ipa_<timestamp>.zip`; the file is at
+`output\ipa_<timestamp>.zip` in the repo.
+
+**Step B — upload that zip via the dashboard.** Drive Chrome (the Claude-in-Chrome
+file-upload tool handles the picker) or have the human do it:
+1. Open the bucket → open the **`ipa/`** folder (so the key becomes
+   `ipa/ipa_<timestamp>.zip` — the prefix must match, or the other machine's
+   `download` won't find it).
+2. **Upload** → select `output\ipa_<timestamp>.zip`.
+3. Optional: delete older `ipa_*.zip` in that folder. The CLI normally keeps the
+   newest 3, but that prune needs the API, so on this machine trim by hand. It's
+   cosmetic — `download` always takes the newest.
+
+The **Mac** then pulls it with plain `psync download --app ipa` (its API works).
+
+---
+
+## Optional shortcut: `--url` (download only)
+
+If the dashboard's download link is a **self-contained signed URL** (signature in
+the query string, on a reachable host), you can skip the save+`--file`:
+
+```bash
+psync download --app ipa --url "<paste the link>" --yes
+```
+
+To check: DevTools → Network, click Download, inspect the request that serves the
+bytes — note the host and whether it carries a signature in the query string. A
+link that needs your browser cookies returns HTML; the command detects that and
+tells you to use `--file` instead. Behind the proxy a direct fetch may need
+`HTTPS_PROXY`, and `NODE_EXTRA_CA_CERTS` (corporate root CA) because TLS is
+intercepted here.
+
+---
+
+## Guardrails — do NOT
 
 - **No circumvention of the proxy block.** No VPN/tunnel, no custom domain
   fronting the bucket, no public `r2.dev` bucket, no stored/persisted Cloudflare
-  session scraped by a script. The dashboard is an *allowed* path; using it — by
-  hand or driven live in the already-logged-in browser — is fine. Automating an
-  *allowed* path is not the same as disguising a *blocked* one.
-- **In parallel, prefer the clean fix:** ask IT to allowlist the single host
+  session scraped by a script. The dashboard is an **allowed** path; using it —
+  by hand or driven live in the already-logged-in browser — is fine. Automating
+  an *allowed* path is not the same as disguising a *blocked* one.
+- **Prefer the clean fix in parallel:** ask IT to allowlist the single host
   `9a407f3de26fca4e66bd1a515d87bb41.r2.cloudflarestorage.com`, or ask for the
-  sanctioned transfer method. If that host is allowlisted, plain
-  `psync download --app ipa` works and none of the browser steps are needed.
+  sanctioned transfer method. **If that host is allowlisted, the whole browser
+  dance disappears** — plain `psync upload` and `psync download` work directly.
 
 ---
 
 ## Verification steps
 
-1. `npm run build` succeeds; `npm test` passes (38 tests).
-2. `psync apps` lists the configured apps with no `x` (unusable) markers.
-3. **Confirm the API really is blocked & you're on the new branch:** run
-   `psync verify --app ipa`. It should fail with the new diagnostic
-   (“… did not return an S3 response … URL Blocked … proxy/gateway”), not an
-   `XML parse error`. That HTML block page is the expected symptom here.
-4. **Is `--url` even possible?** In the browser: DevTools → Network, click Download
-   on a small object, inspect the request that serves the bytes. Note the **host**
-   and whether the URL carries a **signature/token in the query string**.
-   - Self-contained signed URL on a reachable host → `--url` is viable.
-   - Cookie/session-authenticated dashboard endpoint → `--url` won't work; use `--file`.
-5. Do the download + `psync download --app ipa --file <zip>` and inspect
-   `downloadDir` afterward.
+1. `npm run build` succeeds; `npm test` passes (38).
+2. `psync apps` lists the apps with Windows paths, no `x` markers.
+3. **Confirm the API is blocked & you're on the new branch:** `psync verify --app ipa`
+   should fail with the new diagnostic (“… did not return an S3 response … URL
+   Blocked … proxy/gateway”), **not** an `XML parse error`. That block page is the
+   expected symptom here.
+4. **Round trip:**
+   - **Upload:** `psync upload --app ipa --dry-run`, then upload `output\ipa_*.zip`
+     into the bucket's `ipa/` folder via the dashboard. Confirm the object appears
+     under `ipa/`.
+   - **Download:** download that same object via the dashboard, then
+     `psync download --app ipa --file <downloaded> --yes`. Confirm the tree in
+     `downloadDir`, preserved dirs intact, checksum matches.
 
 ---
 
 ## Acceptance criteria
 
-- The **latest `ipa` zip from R2** is on this Windows machine and extracted into
-  the app's `downloadDir`.
-- Extraction **preserved** everything the upload excludes (e.g. `node_modules`,
-  build output) and **removed** stale files, so the tree matches the Mac source.
-  The reported checksum matches the uploaded zip.
-- Achieved **only via the allowed dashboard path** (live login) — no circumvention
-  technique used.
-- Repeatable with low friction: one browser download + one `download --file`
-  command (or Claude-driven during a session). Bonus: `requireR2Settings` made lazy
-  so `--file` needs no credentials.
+- From this Windows machine you can, end to end:
+  1. **Build** a project zip (`upload --dry-run`) and **upload** it to the bucket
+     under the correct `<app>/` prefix via the dashboard.
+  2. **Download** the newest `<app>` zip via the dashboard and **extract** it into
+     `downloadDir`, with the reset preserving everything the upload excluded and
+     removing stale files; the reported checksum matches the uploaded zip.
+- A full Mac ↔ Windows round trip works (Mac via API, Windows via dashboard).
+- Achieved **only via the allowed dashboard path** (live login) — no circumvention.
+- Bonus cleanups if time allows: make `requireR2Settings` lazy so `--file`/`--url`
+  need no credentials; add a thin `psync open` that just opens the bucket folder in
+  the browser.
