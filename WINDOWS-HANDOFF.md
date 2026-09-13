@@ -1,5 +1,22 @@
 # Handoff: end-to-end zip sync on this Windows machine (R2 API is blocked here)
 
+> **Update 2026-09-13 — done, and automated.** The browser dance below is now
+> built in. Start Chrome once with remote debugging and its own profile, sign in
+> to the dashboard, keep it open, and the normal commands work:
+>
+> ```
+> start chrome --remote-debugging-port=9222 --user-data-dir=%LOCALAPPDATA%\psync-chrome https://dash.cloudflare.com
+> psync download --app ipa --yes      # no keys in apps.json → goes through the dashboard by itself
+> psync upload --app ipa              # same; add --browser to force it
+> ```
+>
+> psync attaches to that Chrome (Playwright over the DevTools port), lists the
+> folder, clicks Download / Upload / Delete on your behalf, and verifies sizes
+> and checksums. It never launches a browser and never types credentials; if
+> the window is at the sign-in page it stops and says so. Verified end to end
+> on this machine: upload → download → identical checksum. See README,
+> "Through the browser". The manual steps below still work as a fallback.
+
 > Paste this whole file as your first message to a fresh Claude Code session
 > **running on the Windows machine**. It is self-contained — you should not need
 > the original conversation. Your job is to make **upload → download → extract**

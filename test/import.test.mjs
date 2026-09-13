@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import AdmZip from "adm-zip";
 
 async function withApp(setup) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "psync-import-"));
@@ -37,7 +37,9 @@ function makeZip(root, files) {
     fs.writeFileSync(abs, body);
   }
   const zip = path.join(root, "app_123.zip");
-  execFileSync("zip", ["-qr", zip, "."], { cwd: stage });
+  const archive = new AdmZip();
+  archive.addLocalFolder(stage);
+  archive.writeZip(zip);
   return zip;
 }
 

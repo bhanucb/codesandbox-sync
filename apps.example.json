@@ -7,7 +7,9 @@
       "secretAccessKey": "REPLACE_WITH_YOUR_R2_SECRET"
     },
     "app": "my-app",
-    "exclude": ["dist", "coverage"]
+    "exclude": ["dist", "coverage"],
+    "transport": "auto",
+    "browser": { "cdpUrl": "http://localhost:9222" }
   },
   "apps": {
     "my-app": {

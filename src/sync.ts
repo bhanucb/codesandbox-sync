@@ -4,7 +4,7 @@ import AdmZip from "adm-zip";
 import type { ResolvedApp } from "./config.js";
 import { sanitizeAppName } from "./config.js";
 import { prepareDownloadDir } from "./preserve.js";
-import { createStorage } from "./storage/index.js";
+import { withStorage } from "./storage/index.js";
 import type { RemoteZip, Storage } from "./storage/types.js";
 import {
   calculateChecksum,
@@ -145,11 +145,10 @@ export async function uploadApp(
     return { ...base, remoteLocation: app.remotePrefix };
   }
 
-  const storage = createStorage(app);
-  try {
+  return withStorage(app, log, async (storage) => {
     log(`Uploading ZIP to ${storage.location}…`);
     const zipBuffer = fs.readFileSync(zipPath);
-    const remotePath = await storage.put(zipFileName, zipBuffer, log);
+    const remotePath = await storage.put(zipFileName, zipBuffer, log, zipPath);
 
     await cleanupOldFiles(storage, MAX_SERVER_FILES, log);
 
@@ -166,9 +165,7 @@ export async function uploadApp(
       log(`\n💡 Browse: ${storage.browseUrl}`);
     }
     return result;
-  } finally {
-    storage.close(log);
-  }
+  });
 }
 
 /**
@@ -325,8 +322,7 @@ export async function downloadApp(
     );
   }
 
-  const storage = createStorage(app);
-  try {
+  return withStorage(app, log, async (storage) => {
     log(`\nListing files in ${storage.location}...`);
     const zipFiles = await storage.list(log);
     if (zipFiles.length === 0) {
@@ -401,9 +397,7 @@ export async function downloadApp(
       preserved,
       remoteZips: zipFiles,
     };
-  } finally {
-    storage.close(log);
-  }
+  });
 }
 
 export async function listRemoteZips(
@@ -411,8 +405,7 @@ export async function listRemoteZips(
   options: { log?: Logger } = {}
 ): Promise<RemoteZip[]> {
   const log = options.log ?? noopLog;
-  const storage = createStorage(app);
-  try {
+  return withStorage(app, log, async (storage) => {
     log(`\n📂 ZIP files in ${storage.location}:\n`);
     const zipFiles = await storage.list(log);
 
@@ -428,7 +421,5 @@ export async function listRemoteZips(
       );
     }
     return zipFiles;
-  } finally {
-    storage.close(log);
-  }
+  });
 }

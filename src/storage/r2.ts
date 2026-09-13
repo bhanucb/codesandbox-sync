@@ -27,6 +27,11 @@ function proxyUrl(): string | undefined {
   );
 }
 
+/** Something other than R2 answered on the S3 endpoint: a proxy block page, a portal. */
+export class NotS3ResponseError extends Error {
+  override readonly name = "NotS3ResponseError";
+}
+
 /**
  * The SDK's own failure for a non-S3 response is "XML parse error: expected >",
  * with the body hidden behind an internal field — which says nothing about the
@@ -56,7 +61,7 @@ export function describeFailure(error: unknown, endpoint: string): Error {
   const body = typeof response?.body === "string" ? response.body : "";
   const snippet = body.trim().replace(/\s+/g, " ").slice(0, 300);
 
-  return new Error(
+  return new NotS3ResponseError(
     [
       `${endpoint} did not return an S3 response.`,
       status ? `  HTTP ${status}${contentType ? ` (${contentType})` : ""}` : undefined,
@@ -75,7 +80,14 @@ export function describeFailure(error: unknown, endpoint: string): Error {
   );
 }
 
-function toKeyPrefix(prefix: string): string {
+/** The bucket's page in the Cloudflare dashboard, opened at a folder when given. */
+export function dashboardUrl(accountId: string, bucket: string, prefix?: string): string {
+  const base = `https://dash.cloudflare.com/${accountId}/r2/default/buckets/${bucket}`;
+  const folder = prefix ? toKeyPrefix(prefix) : "";
+  return folder ? `${base}?prefix=${encodeURIComponent(folder)}` : base;
+}
+
+export function toKeyPrefix(prefix: string): string {
   const trimmed = prefix.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/g, "");
   return trimmed.length > 0 ? `${trimmed}/` : "";
 }
@@ -98,7 +110,7 @@ export class R2Storage implements Storage {
     this.prefix = toKeyPrefix(prefix);
     this.endpoint = settings.endpoint;
     this.location = `s3://${this.bucket}/${this.prefix}`;
-    this.browseUrl = `https://dash.cloudflare.com/${settings.accountId}/r2/default/buckets/${this.bucket}`;
+    this.browseUrl = dashboardUrl(settings.accountId, this.bucket);
 
     const proxy = proxyUrl();
     this.client = new S3Client({

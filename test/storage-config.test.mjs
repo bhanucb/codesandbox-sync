@@ -95,7 +95,13 @@ test("missing R2 settings are reported together, naming the registry", async () 
   clearR2Env();
   const { mod } = await withRegistry({ defaults: {}, apps: { demo: {} } });
 
-  assert.throws(() => mod.resolveApp({ appName: "demo" }), (error) => {
+  // Resolving succeeds — only touching the bucket needs the keys, so the
+  // offline commands (--dry-run, --file, --url, apps) work with none configured.
+  const app = mod.resolveApp({ appName: "demo" });
+  assert.equal(app.name, "demo");
+  assert.ok(!Object.keys(app).includes("r2"), "credentials stay out of listings");
+
+  assert.throws(() => app.r2, (error) => {
     assert.match(error.message, /defaults\.r2\.bucket/);
     assert.match(error.message, /defaults\.r2\.accountId/);
     assert.match(error.message, /defaults\.r2\.accessKeyId/);
@@ -162,4 +168,68 @@ test("a leading or trailing slash in a prefix is normalized away", async () => {
     apps: { demo: { remotePrefix: "/archive/demo/" } },
   });
   assert.equal(mod.resolveApp({ appName: "demo" }).remotePrefix, "archive/demo");
+});
+
+test("without keys an app is still listed as usable offline, with the gap named", async () => {
+  clearR2Env();
+  const { mod } = await withRegistry({
+    defaults: { r2: { bucket: "project-zips", accountId: "acct123" } },
+    apps: { demo: {} },
+  });
+  const [listing] = mod.listApps();
+  assert.equal(listing.error, undefined);
+  assert.match(listing.r2Error, /accessKeyId/);
+  assert.match(listing.r2Error, /secretAccessKey/);
+  assert.deepEqual(listing.exclude.slice(0, 2), ["node_modules", ".next"]);
+
+  // The bucket's location needs no keys: that is what `psync open` runs on.
+  const location = mod.requireR2Location("demo", mod.loadConfig());
+  assert.equal(location.bucket, "project-zips");
+  assert.equal(location.endpoint, "https://acct123.r2.cloudflarestorage.com");
+  assert.throws(
+    () => mod.requireR2Location("demo", { defaults: {}, apps: {} }),
+    /defaults\.r2\.bucket.*defaults\.r2\.accountId/
+  );
+});
+
+test("transport and browser settings come from apps.json, with the environment on top", async () => {
+  clearR2Env();
+  delete process.env.PSYNC_TRANSPORT;
+  delete process.env.PSYNC_CDP_URL;
+  const { mod } = await withRegistry({
+    defaults: { r2: { bucket: "b", accountId: "a" } },
+    apps: { demo: {} },
+  });
+  const plain = mod.resolveApp({ appName: "demo" });
+  assert.equal(plain.transport, "auto");
+  assert.equal(plain.browser.cdpUrl, "http://localhost:9222");
+
+  const { mod: configured } = await withRegistry({
+    defaults: {
+      r2: { bucket: "b", accountId: "a" },
+      transport: "browser",
+      browser: { cdpUrl: "http://127.0.0.1:9333/" },
+    },
+    apps: { demo: {} },
+  });
+  const app = configured.resolveApp({ appName: "demo" });
+  assert.equal(app.transport, "browser");
+  assert.equal(app.browser.cdpUrl, "http://127.0.0.1:9333", "trailing slash dropped");
+  assert.equal(app.r2Location.bucket, "b", "the browser route needs no keys");
+
+  process.env.PSYNC_TRANSPORT = "api";
+  process.env.PSYNC_CDP_URL = "http://localhost:9444";
+  try {
+    const overridden = configured.resolveApp({ appName: "demo" });
+    assert.equal(overridden.transport, "api");
+    assert.equal(overridden.browser.cdpUrl, "http://localhost:9444");
+  } finally {
+    delete process.env.PSYNC_TRANSPORT;
+    delete process.env.PSYNC_CDP_URL;
+  }
+
+  await assert.rejects(
+    withRegistry({ defaults: { transport: "carrier-pigeon" }, apps: {} }).then(({ mod: m }) => m.loadConfig()),
+    /defaults\.transport/
+  );
 });

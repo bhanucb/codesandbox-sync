@@ -21,6 +21,23 @@ export type R2Settings = {
   secretAccessKey: string;
 };
 
+/**
+ * How the bytes reach the bucket. "api" is the S3 endpoint; "browser" is the
+ * Cloudflare dashboard driven in a browser the human has signed in to, for
+ * networks that block the endpoint; "auto" tries the endpoint and falls back.
+ */
+export type Transport = "auto" | "api" | "browser";
+
+export const TRANSPORTS: readonly Transport[] = ["auto", "api", "browser"];
+
+/** A browser psync can attach to: Chrome started with --remote-debugging-port. */
+export type BrowserSettings = {
+  /** The DevTools endpoint, e.g. http://localhost:9222. */
+  cdpUrl: string;
+};
+
+export const DEFAULT_CDP_URL = "http://localhost:9222";
+
 export type SyncConfig = {
   defaults: {
     /** R2 connection settings, credentials included. */
@@ -31,6 +48,8 @@ export type SyncConfig = {
       accessKeyId?: string;
       secretAccessKey?: string;
     };
+    transport?: Transport;
+    browser?: Partial<BrowserSettings>;
     /** App used by the `npm run …` scripts when --app is omitted. */
     app?: string;
     include?: string[];
@@ -46,7 +65,12 @@ export type ResolvedApp = {
   /** Objects land at "<remotePrefix>/<app>_<timestamp>.zip". */
   remotePrefix: string;
   downloadDir?: string;
+  /** Resolved on first use; throws when keys are missing. */
   r2: R2Settings;
+  /** Bucket coordinates only, no keys; resolved on first use. */
+  r2Location: R2Location;
+  transport: Transport;
+  browser: BrowserSettings;
   exclude: string[];
   /** Wins over `exclude`, so a project can ship what is normally skipped. */
   include: string[];
@@ -273,6 +297,22 @@ export function loadConfig(): SyncConfig {
     }
   }
 
+  if (d.transport !== undefined) {
+    if (typeof d.transport !== "string" || !TRANSPORTS.includes(d.transport as Transport)) {
+      throw new Error(`${file}: "defaults.transport" must be one of ${TRANSPORTS.join(", ")}`);
+    }
+    defaults.transport = d.transport as Transport;
+  }
+  if (d.browser !== undefined) {
+    if (d.browser === null || typeof d.browser !== "object" || Array.isArray(d.browser)) {
+      throw new Error(`${file}: "defaults.browser" must be an object`);
+    }
+    const cdpUrl = (d.browser as Record<string, unknown>).cdpUrl;
+    if (typeof cdpUrl === "string" && cdpUrl.trim().length > 0) {
+      defaults.browser = { cdpUrl: cdpUrl.trim() };
+    }
+  }
+
   const defaultExclude = parseExcludeList(d.exclude, `${file}: defaults.exclude`);
   if (defaultExclude.length > 0) {
     defaults.exclude = defaultExclude;
@@ -333,12 +373,10 @@ export function resolveExcludes(entry: AppEntry, config: SyncConfig): string[] {
   ]);
 }
 
-/**
- * apps.json is the single source of configuration. Real environment variables
- * still win where they are set, which keeps CI and one-off overrides working
- * without a second config file to maintain.
- */
-export function requireR2Settings(name: string, config: SyncConfig): R2Settings {
+/** The R2 bucket coordinates: enough to name it and to open it in the dashboard. */
+export type R2Location = Pick<R2Settings, "bucket" | "accountId" | "endpoint">;
+
+function collectMissing(): { need: (v: string | undefined, label: string) => string; missing: string[] } {
   const missing: string[] = [];
   const need = (value: string | undefined, label: string): string => {
     const trimmed = value?.trim();
@@ -348,7 +386,44 @@ export function requireR2Settings(name: string, config: SyncConfig): R2Settings 
     }
     return trimmed;
   };
+  return { need, missing };
+}
 
+function reportMissing(name: string, missing: string[], what: string): void {
+  if (missing.length > 0) {
+    throw new Error(
+      `App "${name}" cannot ${what} — missing: ${missing.join(", ")} in ${configPath()}`
+    );
+  }
+}
+
+/**
+ * Where the bucket lives. Needs no credentials, so `psync open` and the
+ * diagnostics work even on a machine that only carries the bucket name.
+ */
+export function requireR2Location(name: string, config: SyncConfig): R2Location {
+  const { need, missing } = collectMissing();
+  const r2 = config.defaults.r2;
+  const bucket = need(process.env.R2_BUCKET || r2?.bucket, "defaults.r2.bucket");
+  const accountId = need(
+    process.env.R2_ACCOUNT_ID || r2?.accountId,
+    "defaults.r2.accountId"
+  );
+  reportMissing(name, missing, "name its R2 bucket");
+  const endpoint =
+    process.env.R2_ENDPOINT?.trim() ||
+    r2?.endpoint ||
+    `https://${accountId}.r2.cloudflarestorage.com`;
+  return { bucket, accountId, endpoint };
+}
+
+/**
+ * apps.json is the single source of configuration. Real environment variables
+ * still win where they are set, which keeps CI and one-off overrides working
+ * without a second config file to maintain.
+ */
+export function requireR2Settings(name: string, config: SyncConfig): R2Settings {
+  const { need, missing } = collectMissing();
   const r2 = config.defaults.r2;
   const bucket = need(process.env.R2_BUCKET || r2?.bucket, "defaults.r2.bucket");
   const accountId = need(
@@ -363,19 +438,29 @@ export function requireR2Settings(name: string, config: SyncConfig): R2Settings 
     process.env.R2_SECRET_ACCESS_KEY || r2?.secretAccessKey,
     "defaults.r2.secretAccessKey"
   );
+  reportMissing(name, missing, "reach R2");
 
-  if (missing.length > 0) {
-    throw new Error(
-      `App "${name}" cannot reach R2 — missing: ${missing.join(", ")} in ${configPath()}`
-    );
-  }
-
-  const endpoint =
-    process.env.R2_ENDPOINT?.trim() ||
-    r2?.endpoint ||
-    `https://${accountId}.r2.cloudflarestorage.com`;
-
+  const { endpoint } = requireR2Location(name, config);
   return { bucket, accountId, endpoint, accessKeyId, secretAccessKey };
+}
+
+/** PSYNC_TRANSPORT wins over defaults.transport; "auto" when neither is set. */
+export function resolveTransport(config: SyncConfig): Transport {
+  const raw = process.env.PSYNC_TRANSPORT?.trim().toLowerCase();
+  if (raw) {
+    if (!TRANSPORTS.includes(raw as Transport)) {
+      throw new Error(`PSYNC_TRANSPORT must be one of ${TRANSPORTS.join(", ")}, not "${raw}"`);
+    }
+    return raw as Transport;
+  }
+  return config.defaults.transport ?? "auto";
+}
+
+/** PSYNC_CDP_URL wins over defaults.browser.cdpUrl; localhost:9222 otherwise. */
+export function resolveBrowser(config: SyncConfig): BrowserSettings {
+  const cdpUrl =
+    process.env.PSYNC_CDP_URL?.trim() || config.defaults.browser?.cdpUrl || DEFAULT_CDP_URL;
+  return { cdpUrl: cdpUrl.replace(/\/+$/, "") };
 }
 
 export function toResolvedApp(
@@ -383,16 +468,43 @@ export function toResolvedApp(
   entry: AppEntry,
   config: SyncConfig
 ): ResolvedApp {
-  return {
+  const app = {
     name,
     sourceDir: entry.sourceDir,
     remotePrefix: entry.remotePrefix ?? sanitizeAppName(name),
     downloadDir: entry.downloadDir,
-    r2: requireR2Settings(name, config),
+    transport: resolveTransport(config),
+    browser: resolveBrowser(config),
     exclude: resolveExcludes(entry, config),
     include: resolveIncludes(entry, config),
     preserveNodeModules: config.defaults.preserveNodeModules,
-  };
+  } as ResolvedApp;
+
+  // Credentials are checked on first use, not here: the commands that never
+  // touch the bucket (--dry-run, --file, --url, apps, open) must work on a
+  // machine that has no keys at all — that is exactly the machine they exist
+  // for. The same goes for the bucket coordinates the browser route needs.
+  let settings: R2Settings | undefined;
+  let location: R2Location | undefined;
+  Object.defineProperties(app, {
+    r2: {
+      enumerable: false,
+      configurable: true,
+      get(): R2Settings {
+        settings ??= requireR2Settings(name, config);
+        return settings;
+      },
+    },
+    r2Location: {
+      enumerable: false,
+      configurable: true,
+      get(): R2Location {
+        location ??= requireR2Location(name, config);
+        return location;
+      },
+    },
+  });
+  return app;
 }
 
 export function isInsideDir(parentDir: string, candidate: string): boolean {
@@ -577,8 +689,10 @@ export type AppListing = {
   exclude?: string[];
   include?: string[];
   sourceExists: boolean;
-  /** Set when the entry cannot be resolved, e.g. missing R2 credentials. */
+  /** Set when the entry cannot be resolved at all. */
   error?: string;
+  /** Set when R2 is not configured: offline commands work, the bucket is out of reach. */
+  r2Error?: string;
 };
 
 /** Never throws: a broken entry is reported, so the list stays diagnosable. */
@@ -600,6 +714,11 @@ export function listApps(): AppListing[] {
         listing.exclude = resolved.exclude;
         if (resolved.include.length > 0) {
           listing.include = resolved.include;
+        }
+        try {
+          void resolved.r2;
+        } catch (error) {
+          listing.r2Error = error instanceof Error ? error.message : String(error);
         }
       } catch (error) {
         listing.error = error instanceof Error ? error.message : String(error);

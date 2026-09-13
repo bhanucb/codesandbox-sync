@@ -78,6 +78,7 @@ cd ~/code/my-app && psync upload   # app inferred from the directory
 psync upload --app my-app --dry-run
 psync download --app my-app        # prompts first
 psync verify --app my-app
+psync open --app my-app            # the app's bucket folder, in the dashboard
 psync apps
 ```
 
@@ -94,7 +95,47 @@ psync download --app my-app --url "https://…/my-app_1789.zip?signature=…"
 an approved transfer, or a USB drive. `--url` fetches first, but only from a
 self-contained link (no browser session): a link that needs your login returns
 HTML, and the command says so and points you back to `--file`. Both work with
-`npm run download -- --app my-app --file <zip>` too.
+`npm run download -- --app my-app --file <zip>` too. `psync open` lands in the
+app's folder in the dashboard, which is where a ZIP moves by hand in either
+direction: `upload --dry-run` builds it, the dashboard carries it.
+
+None of these offline commands need R2 keys. Only `upload`, `download` and
+`verify` do, and `psync apps` says when they are missing.
+
+### Through the browser
+
+When the S3 endpoint is blocked but the Cloudflare dashboard is reachable,
+psync can do the whole transfer through the dashboard, in a browser **you**
+have signed in to. It attaches to that browser; it never launches one and
+never types credentials.
+
+One-time setup per machine — start Chrome with remote debugging and its own
+profile (Chrome refuses debugging on the default profile), then sign in:
+
+```bash
+# Windows
+start chrome --remote-debugging-port=9222 --user-data-dir=%LOCALAPPDATA%\psync-chrome https://dash.cloudflare.com
+# macOS
+open -na "Google Chrome" --args --remote-debugging-port=9222 --user-data-dir="$HOME/.psync-chrome" https://dash.cloudflare.com
+```
+
+The sign-in persists in that profile. Keep the window open while syncing, then:
+
+```bash
+psync upload --app my-app --browser
+psync download --app my-app --browser
+```
+
+Without `--browser`, psync tries the S3 endpoint first and switches to the
+browser on its own when the endpoint answers with a block page, or when no
+keys are configured at all — so the corporate machine needs no keys in its
+`apps.json`. Pin the behaviour with `defaults.transport` (`auto`, `api`,
+`browser`) and point at a different debugging port with
+`defaults.browser.cdpUrl`; `PSYNC_TRANSPORT` and `PSYNC_CDP_URL` override both.
+
+If the window shows the sign-in page, psync stops and says so. Uploads
+through the dashboard are verified by size on the object's page, downloads by
+checksum like any other; the dashboard caps a single upload at 300 MB.
 
 Target order: `--source`, `--app`, current directory, then `defaults.app`.
 Overrides for one run: `--prefix`, `--to`.
@@ -186,9 +227,11 @@ npm test
 server) are thin wrappers over it. The CLI imports nothing from the MCP SDK.
 
 `src/storage/` is the transport seam: `types.ts` declares the five operations
-syncing needs (list, put, get, remove, close) and `r2.ts` implements them.
-`sync.ts` knows nothing about S3 — a different store means one new file there
-and a line in `createStorage`.
+syncing needs (list, put, get, remove, close); `r2.ts` implements them over
+S3 and `dashboard.ts` over the Cloudflare dashboard in an attached browser.
+`index.ts` picks between them (`withStorage`: S3 first, browser when the
+endpoint is blocked or no keys exist). `sync.ts` knows nothing about either —
+a different store means one new file there and a line in `createStorage`.
 
 ## License
 

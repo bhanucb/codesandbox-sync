@@ -22,8 +22,12 @@ export interface Storage {
 
   /** ZIPs only, newest first. Returns [] when the target is empty. */
   list(log: Logger): Promise<RemoteZip[]>;
-  /** Uploads and verifies; resolves to the stored object's key. */
-  put(name: string, data: Buffer, log: Logger): Promise<string>;
+  /**
+   * Uploads and verifies; resolves to the stored object's key. `localPath` is
+   * where `data` already sits on disk, for transports that move files rather
+   * than bytes.
+   */
+  put(name: string, data: Buffer, log: Logger, localPath?: string): Promise<string>;
   get(zip: RemoteZip, log: Logger): Promise<Buffer>;
   remove(zip: RemoteZip, log: Logger): Promise<void>;
   /** Releases any connection. Must not throw. */

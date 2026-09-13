@@ -108,6 +108,7 @@ If `npm link` fails on permissions, report it. Do not use `sudo`.
 ```bash
 node dist/bin.js upload --app <name> --dry-run   # zips only, no network
 node dist/bin.js verify --app <name>             # lists remote ZIPs, changes nothing
+node dist/bin.js open --app <name>               # the app's folder in the dashboard
 ```
 
 `verify` is the first call that touches the network, so it is where a blocked

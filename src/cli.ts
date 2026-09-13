@@ -7,7 +7,7 @@ import {
 
 /** Flags the `npm run …` entry points understand. */
 const VALUE_FLAGS = new Set(["app", "file", "url", "to"]);
-const BOOLEAN_FLAGS = new Set(["dry-run", "yes", "help"]);
+const BOOLEAN_FLAGS = new Set(["dry-run", "yes", "help", "browser"]);
 
 /**
  * Rejects anything this entry point would otherwise ignore.
@@ -34,7 +34,7 @@ function assertRecognizedArgs(argv: readonly string[]): void {
       continue;
     }
     throw new Error(
-      `Unknown option "${arg}". Supported here: --app <name>, --dry-run.`
+      `Unknown option "${arg}". Supported here: --app <name>, --dry-run, --browser, --yes, --file <zip>, --url <link>.`
     );
   }
 }
@@ -62,7 +62,14 @@ export function resolveCliApp(
     assertRecognizedArgs(argv);
   }
   const config = loadConfig();
+  const app = resolveNamed(argv, config);
+  if (argv.includes("--browser")) {
+    app.transport = "browser";
+  }
+  return app;
+}
 
+function resolveNamed(argv: string[], config: ReturnType<typeof loadConfig>): ResolvedApp {
   const explicit = flagValue(argv, "--app");
   if (explicit) {
     return resolveApp({ appName: explicit, config });

@@ -2,25 +2,29 @@
 import fs from "fs";
 import path from "path";
 import readline from "readline/promises";
+import { spawn } from "child_process";
 import { resolveCliApp } from "./cli.js";
 import {
   listApps,
   loadConfig,
+  requireR2Location,
   resolveApp,
   sanitizeAppName,
   toResolvedApp,
   type ResolvedApp,
 } from "./config.js";
 import { configPath } from "./paths.js";
+import { dashboardUrl } from "./storage/r2.js";
 import { downloadApp, downloadFromUrl, importZipFile, listRemoteZips, uploadApp } from "./sync.js";
 
 const USAGE = `psync — zip a project to Cloudflare R2, and back
 
 Usage:
-  psync upload   [--app <name>] [--source <dir>] [--prefix <key>] [--dry-run]
-  psync download [--app <name>] [--to <dir>] [--prefix <key>] [--yes]
+  psync upload   [--app <name>] [--source <dir>] [--prefix <key>] [--dry-run] [--browser]
+  psync download [--app <name>] [--to <dir>] [--prefix <key>] [--yes] [--browser]
                  [--file <zip>] [--url <link>]
-  psync verify   [--app <name>] [--prefix <key>]
+  psync verify   [--app <name>] [--prefix <key>] [--browser]
+  psync open     [--app <name>] [--prefix <key>]
   psync apps
 
 Target resolution, in order:
@@ -36,6 +40,12 @@ Options:
   --file <zip>     Extract a ZIP already on disk instead of fetching from R2
   --url <link>     Fetch a ZIP from a URL, then extract (self-contained links only)
   --dry-run        Build the ZIP and report its size; never contacts R2
+  --browser        Go through the dashboard in a browser you have signed in to
+                   (Chrome started with --remote-debugging-port=9222 and its own
+                   --user-data-dir). Without this flag, psync tries the S3
+                   endpoint first and switches to the browser only when the
+                   endpoint is blocked or no keys are configured.
+  open             Open the app's bucket folder in the Cloudflare dashboard
   --yes, -y        Skip the download confirmation prompt
   --help, -h       Show this help
 
@@ -44,10 +54,12 @@ Examples:
   psync upload --app ipa --dry-run
   psync upload --source . --prefix scratch
   psync download --app direct-bidding --yes
-  psync download --app ipa --file ~/Downloads/ipa_1789.zip   # R2 blocked here
+  psync download --app ipa --browser                          # S3 blocked: use the dashboard
+  psync download --app ipa --file ~/Downloads/ipa_1789.zip   # ZIP fetched by hand
+  psync open --app ipa                                        # the folder, for moving it by hand
 `;
 
-const BOOLEAN_FLAGS = new Set(["dry-run", "yes", "help"]);
+const BOOLEAN_FLAGS = new Set(["dry-run", "yes", "help", "browser"]);
 
 type Flags = Map<string, string | true>;
 
@@ -124,6 +136,7 @@ function applyOverrides(app: ResolvedApp, flags: Flags): ResolvedApp {
   const to = str(flags, "to");
   if (prefix) app.remotePrefix = prefix;
   if (to) app.downloadDir = to;
+  if (flags.get("browser") === true) app.transport = "browser";
   return app;
 }
 
@@ -196,6 +209,8 @@ function printApps(): void {
     console.log(`  ${" ".repeat(width)}  → ${app.remotePrefix}/`);
     if (app.error) {
       console.log(`  ${" ".repeat(width)}  x ${app.error}`);
+    } else if (app.r2Error) {
+      console.log(`  ${" ".repeat(width)}  ~ ${app.r2Error}`);
     }
   }
   const missing = apps.filter((a) => !a.sourceExists && !a.error);
@@ -205,6 +220,34 @@ function printApps(): void {
   const broken = apps.filter((a) => a.error);
   if (broken.length > 0) {
     console.log(`\nx unusable: ${broken.map((a) => a.name).join(", ")}`);
+  }
+  const offline = apps.filter((a) => !a.error && a.r2Error);
+  if (offline.length > 0) {
+    console.log(
+      "\n~ no R2 keys: upload, download and verify go through the dashboard in your browser instead (see --browser); --dry-run, --file, --url and open need neither"
+    );
+  }
+}
+
+/**
+ * Hands a URL to the desktop's default browser. Fire-and-forget: the URL is
+ * printed first, so a machine with no browser still gets something to paste.
+ */
+function openInBrowser(url: string): void {
+  const [cmd, args]: [string, string[]] =
+    process.platform === "win32"
+      ? ["rundll32.exe", ["url.dll,FileProtocolHandler", url]]
+      : process.platform === "darwin"
+        ? ["open", [url]]
+        : ["xdg-open", [url]];
+  try {
+    const child = spawn(cmd, args, { detached: true, stdio: "ignore" });
+    child.on("error", () => {
+      /* the URL is already on screen */
+    });
+    child.unref();
+  } catch {
+    /* same */
   }
 }
 
@@ -274,9 +317,23 @@ async function main(): Promise<void> {
       return;
     }
 
+    case "open": {
+      // The manual path for when the S3 endpoint is blocked: the dashboard
+      // carries the bytes, this just lands you in the right folder. Needs the
+      // bucket name and account id, never the keys.
+      const app = resolveTarget(argv, flags);
+      const { accountId, bucket } = requireR2Location(app.name, loadConfig());
+      const url = dashboardUrl(accountId, bucket, app.remotePrefix);
+      console.log(`App: ${app.name}`);
+      console.log(`  Folder: ${app.remotePrefix}/ in ${bucket}`);
+      console.log(`  ${url}`);
+      openInBrowser(url);
+      return;
+    }
+
     default:
       throw new Error(
-        `Unknown command "${command}". Expected: upload, download, verify, apps.`
+        `Unknown command "${command}". Expected: upload, download, verify, open, apps.`
       );
   }
 }
