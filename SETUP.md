@@ -189,6 +189,7 @@ other edits the registry.
 | `NoSuchBucket` | Wrong `R2_BUCKET` or `R2_ACCOUNT_ID` |
 | Request fails with a certificate error | Proxy intercepts TLS — set `NODE_EXTRA_CA_CERTS` |
 | Request hangs or times out | Egress needs a proxy — set `HTTPS_PROXY` |
+| `did not return an S3 response` | A proxy or gateway answered instead of R2; the message shows what came back |
 | `No configured app matches path …` | Run from inside a registered `sourceDir`, or pass `--app` |
 | `Unknown app "x"` | Not registered — `psync apps` lists valid names |
 | Client shows no tools | Path not absolute, or client not restarted |
