@@ -74,42 +74,41 @@ here. The dashboard download path *is* reachable, so the intended flow is:
 
 ### 1. Set up the tool
 
+SSH is configured on this machine, so clone over SSH (if the repo is already
+cloned, just `git checkout r2-storage-backend && git pull`):
+
 ```bash
-git clone <repo-url> project-sync && cd project-sync
+git clone git@github.com:bhanucb/codesandbox-sync.git project-sync && cd project-sync
 git checkout r2-storage-backend
 npm install && npm run build
 ```
 
-### 2. Create `apps.json` (not in the repo — it holds live credentials)
+### 2. Use the existing `apps.json` (already copied over, with the keys)
 
-Copy `apps.example.json` to `apps.json` and fill in:
-- `defaults.r2` with the real bucket / accountId / **accessKeyId / secretAccessKey**
-  (the human has these; they live only in this gitignored file — never commit it).
-- The app(s) you need, with **Windows** paths, e.g.:
+**`apps.json` is already present on this machine and contains the real R2
+credentials** (`defaults.r2` — bucket, accountId, accessKeyId, secretAccessKey).
+**Reuse it — do not recreate it from `apps.example.json`, and never commit it**
+(it is gitignored).
+
+The one thing to fix: it was copied from the Mac, so its `sourceDir` /
+`downloadDir` are **Mac paths** (`/Users/bhanu/...`) that don't exist here. For
+the app you're pulling (e.g. `ipa`), update those to **Windows paths**, keeping
+the `defaults.r2` credentials untouched:
 
 ```json
-{
-  "defaults": {
-    "r2": {
-      "bucket": "project-zips",
-      "accountId": "9a407f3de26fca4e66bd1a515d87bb41",
-      "accessKeyId": "<ask the human>",
-      "secretAccessKey": "<ask the human>"
-    }
-  },
-  "apps": {
-    "ipa": {
-      "sourceDir": "C:\\Users\\<you>\\Desktop\\apps\\ipa",
-      "downloadDir": "C:\\Users\\<you>\\Downloads\\Apps\\ipa-webapp-refactoring"
-    }
-  }
+"ipa": {
+  "sourceDir": "C:\\Users\\<you>\\Desktop\\apps\\ipa",
+  "downloadDir": "C:\\Users\\<you>\\Downloads\\Apps\\ipa-webapp-refactoring"
 }
 ```
 
+Then run `psync apps` — it should list the apps with the corrected paths and no
+`x` (unusable) markers.
+
 > Known papercut: even `download --file` currently resolves R2 settings, so the
-> `defaults.r2` block must be present (real values, since you have them) for the
-> extract to run. If you want, make `requireR2Settings` lazy so `--file`/`--url`
-> work with no credentials — optional, not required.
+> `defaults.r2` block must be present for the extract to run — it already is, so
+> nothing to do. (Optional: make `requireR2Settings` lazy so `--file`/`--url`
+> work with no credentials.)
 
 ### 3. Get the zip and extract it
 
