@@ -102,6 +102,12 @@ direction: `upload --dry-run` builds it, the dashboard carries it.
 None of these offline commands need R2 keys. Only `upload`, `download` and
 `verify` do, and `psync apps` says when they are missing.
 
+**Where the ZIP is.** `upload` builds it under `output/` in this repo. A
+verified upload removes it; a failed one keeps it and the error names the
+path, so it can still go into the bucket by hand (`psync open` gets you to the
+folder). `--dry-run` keeps it too, and only the two newest dry-run ZIPs are
+retained.
+
 ### Through the browser
 
 When the S3 endpoint is blocked but the Cloudflare dashboard is reachable,
@@ -135,6 +141,11 @@ If a Chrome is already listening there — one you started with
 `--remote-debugging-port=9222 --user-data-dir=<profileDir>` — psync attaches
 to it instead and leaves it running. `PSYNC_BROWSER_PROFILE`,
 `PSYNC_BROWSER_HIDDEN`, `PSYNC_CHROME` and `PSYNC_CDP_URL` override the four.
+
+If psync cannot tell what the window shows — a corporate interstitial, a
+certificate warning, a login page it has not seen — it brings the window on
+screen, logs the page's title and URL, saves a screenshot under `output/`,
+and waits for you to get it to the bucket page.
 
 Downloads go to a temporary file that is deleted once extracted; nothing lands
 in the browser's Downloads folder. Uploads are verified by size on the

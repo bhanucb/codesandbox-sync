@@ -31,7 +31,8 @@ export type UploadResult = RemoteInfo & {
   sizeBytes: number;
   sizeMb: string;
   checksum: string;
-  localZipPath: string;
+  /** Where the ZIP sits on disk. Set after a dry run; a real upload removes it. */
+  localZipPath?: string;
   remotePath?: string;
   excluded: string[];
   dryRun: boolean;
@@ -135,37 +136,47 @@ export async function uploadApp(
     sizeBytes,
     sizeMb,
     checksum,
-    localZipPath: zipPath,
     excluded: [...app.exclude],
     dryRun,
   };
 
   if (dryRun) {
     log("Dry run — skipping upload.");
-    return { ...base, remoteLocation: app.remotePrefix };
+    log(`ZIP kept at ${zipPath}`);
+    return { ...base, localZipPath: zipPath, remoteLocation: app.remotePrefix };
   }
 
-  return withStorage(app, log, async (storage) => {
-    log(`Uploading ZIP to ${storage.location}…`);
-    const zipBuffer = fs.readFileSync(zipPath);
-    const remotePath = await storage.put(zipFileName, zipBuffer, log, zipPath);
+  let result: UploadResult;
+  try {
+    result = await withStorage(app, log, async (storage) => {
+      log(`Uploading ZIP to ${storage.location}…`);
+      const zipBuffer = fs.readFileSync(zipPath);
+      const remotePath = await storage.put(zipFileName, zipBuffer, log, zipPath);
 
-    await cleanupOldFiles(storage, MAX_SERVER_FILES, log);
+      await cleanupOldFiles(storage, MAX_SERVER_FILES, log);
 
-    const result: UploadResult = {
-      ...base,
-      ...remoteInfo(storage),
-      remotePath,
-    };
-    log("\n✅ UPLOAD VERIFIED SUCCESSFULLY!");
-    log(`   File: ${remotePath}`);
-    log(`   Size: ${sizeMb} MB`);
-    log(`   Checksum: ${checksum}`);
-    if (storage.browseUrl) {
-      log(`\n💡 Browse: ${storage.browseUrl}`);
-    }
-    return result;
-  });
+      return { ...base, ...remoteInfo(storage), remotePath };
+    });
+  } catch (error) {
+    // The ZIP is the valuable part; say where it is so it can still go by hand.
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `${message}\n\nThe ZIP is ready at ${zipPath} — upload it by hand into ${app.remotePrefix}/ in the bucket (\`psync open --app ${app.name}\` opens that folder), then delete the file.`
+    );
+  }
+
+  // Uploaded and verified: the local copy has served its purpose.
+  fs.rmSync(zipPath, { force: true });
+  log(`  ✓ Removed local ZIP ${zipFileName}`);
+
+  log("\n✅ UPLOAD VERIFIED SUCCESSFULLY!");
+  log(`   File: ${result.remotePath}`);
+  log(`   Size: ${sizeMb} MB`);
+  log(`   Checksum: ${checksum}`);
+  if (result.browseUrl) {
+    log(`\n💡 Browse: ${result.browseUrl}`);
+  }
+  return result;
 }
 
 /**

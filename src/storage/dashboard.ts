@@ -3,6 +3,7 @@ import fs from "fs";
 import path from "path";
 import { chromium, type Browser, type Page } from "playwright-core";
 import type { BrowserSettings, R2Location } from "../config.js";
+import { OUTPUT_DIR } from "../paths.js";
 import type { Logger } from "../zip.js";
 import { dashboardUrl, toKeyPrefix } from "./r2.js";
 import type { RemoteZip, Storage } from "./types.js";
@@ -129,7 +130,15 @@ function mainText(page: Page): Promise<string> {
   );
 }
 
-type PageState = "ready" | "sign-in" | "challenge" | "missing";
+/** "unknown" is a page psync does not recognise — a person has to look. */
+type PageState = "ready" | "sign-in" | "challenge" | "missing" | "unknown";
+
+const NEEDS_A_PERSON: ReadonlySet<PageState> = new Set(["sign-in", "challenge", "unknown"]);
+
+/** Has this profile ever been used? A fresh one has no Default profile yet. */
+export function isFreshProfile(profileDir: string): boolean {
+  return !fs.existsSync(path.join(profileDir, "Default"));
+}
 
 /**
  * Cloudflare R2 through the dashboard, driven in Google Chrome. This is for
@@ -187,8 +196,37 @@ export class DashboardStorage implements Storage {
       this.visible = true;
       return this.attach();
     }
-    await this.launch(!this.settings.hidden, log);
+    // A profile that has never been used cannot be signed in: start on screen
+    // straight away rather than off-screen and back.
+    let visible = !this.settings.hidden;
+    if (!visible && isFreshProfile(this.settings.profileDir)) {
+      log("  First run with this profile — Chrome will stay on screen so you can sign in.");
+      visible = true;
+    }
+    await this.launch(visible, log);
     return this.attach();
+  }
+
+  /** One line saying what the page shows, for logs and errors. */
+  private async describe(page: Page): Promise<string> {
+    const title = await page.title().catch(() => "(no title)");
+    const text = (await mainText(page).catch(() => ""))
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 160);
+    return `"${title}" at ${page.url()}${text ? ` — ${text}` : ""}`;
+  }
+
+  /** Saves what the page looks like, so the human can see what psync saw. */
+  private async snapshot(page: Page): Promise<string | undefined> {
+    try {
+      fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+      const file = path.join(OUTPUT_DIR, `dashboard-${Date.now()}.png`);
+      await page.screenshot({ path: file });
+      return file;
+    } catch {
+      return undefined;
+    }
   }
 
   private async attach(): Promise<Page> {
@@ -244,16 +282,32 @@ export class DashboardStorage implements Storage {
     this.visible = visible;
   }
 
+  /**
+   * The folder page is ready when its Upload button shows — or, for a folder
+   * with nothing in it yet, the drop zone the dashboard shows instead. The
+   * object page is ready when its Download button shows.
+   */
+  private readyLocator(page: Page) {
+    return page
+      .getByRole("button", { name: /^(upload|download|add folder)$/i })
+      .first()
+      .or(page.getByText(/Drag and drop|No objects/i).first());
+  }
+
   /** Reads which of the known page states is showing, waiting for one. */
   private async settle(page: Page, timeout = 60_000): Promise<PageState> {
-    const ready = page.getByRole("button", { name: /^(upload|download)$/i }).first();
-    const signIn = page.getByText(/Sign in to Cloudflare/i).first();
+    const ready = this.readyLocator(page);
+    const signIn = page.getByText(/Sign in to Cloudflare|Log in to Cloudflare/i).first();
     const challenge = page
       .getByText(/Performing security verification|Verify you are human|Just a moment/i)
       .first();
     const missing = page.getByText(/Failed to find/i).first();
-    await ready.or(signIn).or(challenge).or(missing).first().waitFor({ timeout });
-    if (await signIn.isVisible().catch(() => false)) {
+    try {
+      await ready.or(signIn).or(challenge).or(missing).first().waitFor({ timeout });
+    } catch {
+      return /\/login\b/.test(page.url()) ? "sign-in" : "unknown";
+    }
+    if (/\/login\b/.test(page.url()) || (await signIn.isVisible().catch(() => false))) {
       return "sign-in";
     }
     if (await challenge.isVisible().catch(() => false)) {
@@ -271,42 +325,62 @@ export class DashboardStorage implements Storage {
     let state = await this.settle(page);
     while (state === "challenge" && Date.now() < deadline) {
       await page.waitForTimeout(2000);
-      state = await this.settle(page, 15_000).catch(() => "challenge" as const);
+      state = await this.settle(page, 15_000);
     }
     return state;
   }
 
+  private async whyAPerson(page: Page, state: PageState): Promise<string> {
+    switch (state) {
+      case "sign-in":
+        return "Not signed in yet";
+      case "challenge":
+        return "Cloudflare wants a human check";
+      default:
+        return `Unexpected page: ${await this.describe(page)}`;
+    }
+  }
+
   /**
-   * Loads a dashboard page. A sign-in page or a bot check that wants a
-   * person is not an error: the human gets a visible window and up to ten
-   * minutes, and the profile remembers the outcome.
+   * Loads a dashboard page. A sign-in page, a bot check, or a page psync
+   * does not recognise is not an error yet: the human gets a visible window
+   * and up to ten minutes to get it to the bucket, and the profile remembers
+   * the outcome.
    */
   private async goto(url: string, log: Logger): Promise<Page> {
     let page = await this.open(log);
     await page.goto(url, { waitUntil: "domcontentloaded" });
     let state = await this.settleThroughChallenge(page);
 
-    if (state === "sign-in" || state === "challenge") {
+    if (NEEDS_A_PERSON.has(state)) {
       if (!this.visible) {
-        log(`  ${state === "sign-in" ? "Not signed in yet" : "Cloudflare wants a human check"} — opening a Chrome window…`);
+        log(`  ${await this.whyAPerson(page, state)} — opening a Chrome window…`);
         await this.close(log);
         await this.launch(true, log);
         page = await this.attach();
         await page.goto(url, { waitUntil: "domcontentloaded" });
         state = await this.settleThroughChallenge(page);
       }
-      if (state === "sign-in" || state === "challenge") {
+      if (NEEDS_A_PERSON.has(state)) {
+        if (state === "unknown") {
+          const shot = await this.snapshot(page);
+          log(`  This is not a page psync recognises: ${await this.describe(page)}`);
+          if (shot) {
+            log(`  Screenshot: ${shot}`);
+          }
+        }
         log(
           state === "sign-in"
             ? `  Sign in to Cloudflare in the Chrome window (waiting up to ${HUMAN_MINUTES} minutes; the profile remembers it)…`
-            : `  Tick "Verify you are human" in the Chrome window (waiting up to ${HUMAN_MINUTES} minutes)…`
+            : state === "challenge"
+              ? `  Tick "Verify you are human" in the Chrome window (waiting up to ${HUMAN_MINUTES} minutes)…`
+              : `  In the Chrome window, get to the bucket page — sign in, accept any prompt (waiting up to ${HUMAN_MINUTES} minutes)…`
         );
-        const ready = page.getByRole("button", { name: /^(upload|download)$/i }).first();
         try {
-          await ready.waitFor({ timeout: HUMAN_MINUTES * 60_000 });
+          await this.readyLocator(page).waitFor({ timeout: HUMAN_MINUTES * 60_000 });
         } catch {
           throw new Error(
-            `Timed out after ${HUMAN_MINUTES} minutes waiting for you in the Chrome window. Re-run when ready.`
+            `Timed out after ${HUMAN_MINUTES} minutes waiting for you in the Chrome window. It showed: ${await this.describe(page)}. Re-run when ready.`
           );
         }
         log("  ✓ Thanks — carrying on");
@@ -319,8 +393,10 @@ export class DashboardStorage implements Storage {
       }
     }
 
-    if (state === "sign-in" || state === "challenge") {
-      throw new Error("Cloudflare is still asking for you; re-run once the page shows the bucket.");
+    if (NEEDS_A_PERSON.has(state)) {
+      throw new Error(
+        `Cloudflare is still asking for you; re-run once the page shows the bucket. It showed: ${await this.describe(page)}`
+      );
     }
     if (state === "missing") {
       throw new Error(`The dashboard has no such object: ${url}`);
@@ -356,9 +432,21 @@ export class DashboardStorage implements Storage {
     const page = await this.goto(this.folderUrl, log);
 
     // The Upload button reveals two hidden file inputs: files, and a folder.
-    await page.getByRole("button", { name: /^upload$/i }).first().click();
+    // A folder with nothing in it yet shows that drop zone already, with no
+    // button to click — the first upload into a new prefix lands here.
+    const uploadButton = page.getByRole("button", { name: /^upload$/i }).first();
+    if (await uploadButton.isVisible().catch(() => false)) {
+      await uploadButton.click();
+    }
     const input = page.locator("input[type=file]:not([webkitdirectory])").first();
-    await input.waitFor({ state: "attached", timeout: 10_000 });
+    try {
+      await input.waitFor({ state: "attached", timeout: 10_000 });
+    } catch {
+      const shot = await this.snapshot(page);
+      throw new Error(
+        `Could not find the upload control on ${await this.describe(page)}${shot ? ` (screenshot: ${shot})` : ""}`
+      );
+    }
 
     const timeout = transferTimeout(data.length);
     log(`  Handing ${name} to the browser (${(data.length / 1e6).toFixed(2)} MB)…`);
