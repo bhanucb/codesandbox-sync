@@ -148,8 +148,10 @@ screen, logs the page's title and URL, saves a screenshot under `output/`,
 and waits for you to get it to the bucket page.
 
 Downloads go to a temporary file that is deleted once extracted; nothing lands
-in the browser's Downloads folder. Uploads are verified by size on the
-object's page, downloads by checksum like any other. The dashboard caps a
+in the browser's Downloads folder. An upload is confirmed by re-reading the
+folder from the bucket page inwards and finding the object at the right size —
+never by trusting the dashboard's progress panel, which dismisses itself and
+can show a file it is still writing. Downloads are checksummed like any other. The dashboard caps a
 single upload at 300 MB. Headless Chrome is not an option: the dashboard's
 bot check turns it away, which is why the window is off-screen rather than
 absent.

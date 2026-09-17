@@ -6,9 +6,11 @@ import {
   findChrome,
   launchHint,
   parseFolderListing,
+  parseUploadProgress,
   parseModified,
   parseSize,
   timestampFromName,
+  transferTimeout,
 } from "../dist/storage/dashboard.js";
 
 test("the dashboard URL lands on the bucket, or on a folder when given a prefix", () => {
@@ -91,4 +93,22 @@ test("an explicit Chrome binary wins, but only when it exists", () => {
   assert.ok(found === undefined || found.length > 0, "either a path or nothing");
   assert.equal(findChrome("/definitely/not/here/chrome"), found, "a missing override is ignored");
   assert.equal(findChrome(process.execPath), process.execPath, "an existing override is taken as-is");
+});
+
+test("the transfer allowance scales with size, in milliseconds", () => {
+  // A rate is per second, so it has to be scaled up: without that every size
+  // collapses onto the floor and a big upload is cut off early.
+  assert.equal(transferTimeout(1_000), 300_000, "a small file still gets the floor");
+  assert.equal(transferTimeout(50_000_000), 1_000_000, "50 MB at 50 KB/s is 1000s");
+  assert.ok(
+    transferTimeout(2_000_000_000) > 300_000,
+    "a multi-gigabyte upload is not capped at the floor"
+  );
+});
+
+test("upload progress is read from the dashboard's panel, or reported absent", () => {
+  assert.deepEqual(parseUploadProgress("0/1 files uploaded Cancel"), { done: 0, total: 1 });
+  assert.deepEqual(parseUploadProgress("3 / 3 files uploaded"), { done: 3, total: 3 });
+  // The panel dismisses itself when it finishes, which must not read as failure.
+  assert.equal(parseUploadProgress("Drag and drop to start uploading"), undefined);
 });

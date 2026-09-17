@@ -119,9 +119,21 @@ export function parseFolderListing(rows: readonly FolderRow[], prefix: string): 
   return zips;
 }
 
-/** Generous: assume at least 100 KB/s, never less than three minutes. */
-function transferTimeout(bytes: number): number {
-  return Math.max(180_000, Math.ceil(bytes / 100_000));
+/**
+ * Generous: assume as little as 50 KB/s on a throttled corporate link, and
+ * never less than five minutes. In milliseconds — the rate is per second, so
+ * it has to be scaled, or every size collapses onto the floor.
+ */
+export function transferTimeout(bytes: number): number {
+  return Math.max(300_000, Math.ceil(bytes / 50_000) * 1000);
+}
+
+/** The dashboard's upload panel counts files, e.g. "0/1 files uploaded". */
+export function parseUploadProgress(
+  text: string
+): { done: number; total: number } | undefined {
+  const match = text.match(/(\d+)\s*\/\s*(\d+)\s*files uploaded/i);
+  return match ? { done: Number(match[1]), total: Number(match[2]) } : undefined;
 }
 
 function mainText(page: Page): Promise<string> {
@@ -194,7 +206,18 @@ export class DashboardStorage implements Storage {
       log(`  Attaching to the browser at ${this.settings.cdpUrl}…`);
       this.launched = false;
       this.visible = true;
-      return this.attach();
+      try {
+        return await this.attach();
+      } catch {
+        // The port answered but the browser is going away — one that is
+        // shutting down still serves /json/version for a moment. Wait for it
+        // to let go, then start a fresh one below.
+        log("  That browser was closing — starting a fresh one…");
+        const deadline = Date.now() + 15_000;
+        while (Date.now() < deadline && (await browserAvailable(this.settings.cdpUrl))) {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+        }
+      }
     }
     // A profile that has never been used cannot be signed in: start on screen
     // straight away rather than off-screen and back.
@@ -407,12 +430,14 @@ export class DashboardStorage implements Storage {
   async list(log: Logger): Promise<RemoteZip[]> {
     log(`  Reading ${this.prefix || "/"} in the dashboard…`);
     const page = await this.goto(this.folderUrl, log);
-    // An empty folder never shows a ZIP link; give a populated one a moment to render.
+    // An empty folder never shows a ZIP link; give a populated one a moment to
+    // render, then settle, since the rows arrive after the page is "ready".
     await page
       .locator("a", { hasText: /\.zip$/ })
       .first()
       .waitFor({ timeout: 10_000 })
       .catch(() => undefined);
+    await page.waitForTimeout(1500);
     const rows = await page.evaluate(() =>
       Array.from(document.querySelectorAll("a"))
         .filter((a) => /\.zip$/.test((a.textContent ?? "").trim()))
@@ -430,6 +455,11 @@ export class DashboardStorage implements Storage {
   async put(name: string, data: Buffer, log: Logger, localPath?: string): Promise<string> {
     const key = `${this.prefix}${name}`;
     const page = await this.goto(this.folderUrl, log);
+
+    // The folder view resolves after the bucket page itself does, and the
+    // upload lands in whatever folder is showing when the file is handed
+    // over. Handing it over too early stored nothing at all, so settle first.
+    await page.waitForTimeout(3000);
 
     // The Upload button reveals two hidden file inputs: files, and a folder.
     // A folder with nothing in it yet shows that drop zone already, with no
@@ -457,37 +487,104 @@ export class DashboardStorage implements Storage {
     }
 
     log(`  Uploading through the dashboard…`);
-    const deadline = Date.now() + timeout;
-    let complete = false;
+    const panel = await this.watchUploadPanel(page, timeout, log);
+    log(
+      panel === "timeout"
+        ? `  The panel never reported finishing within ${Math.round(timeout / 1000)}s — asking the bucket instead…`
+        : `  Upload finished`
+    );
+
+    log("Verifying upload…");
+    await this.confirmStored(name, data.length, panel, log);
+    return key;
+  }
+
+  /**
+   * Follows the dashboard's upload panel. The panel is a hint about *when*
+   * the transfer settled, never the verdict: it dismisses itself once done,
+   * and a dismissed panel looks exactly like one that never appeared. So
+   * every outcome here — "timeout" included — is handed to confirmStored,
+   * which asks the bucket. Treating the panel as the verdict is what made a
+   * finished upload report failure.
+   */
+  private async watchUploadPanel(
+    page: Page,
+    timeout: number,
+    log: Logger
+  ): Promise<"done" | "dismissed" | "timeout"> {
+    const started = Date.now();
+    const deadline = started + timeout;
+    let seen = false;
+    let lastLogged = 0;
+
     while (Date.now() < deadline) {
-      const text = await mainText(page);
-      const progress = text.match(/(\d+)\/(\d+) files uploaded/);
-      if (progress && progress[1] === progress[2]) {
-        complete = true;
-        break;
+      const progress = parseUploadProgress(await mainText(page).catch(() => ""));
+      if (progress) {
+        seen = true;
+        if (progress.total > 0 && progress.done === progress.total) {
+          return "done";
+        }
+        const elapsed = Date.now() - started;
+        if (elapsed - lastLogged >= 30_000) {
+          lastLogged = elapsed;
+          log(
+            `    still uploading: ${progress.done}/${progress.total} after ${Math.round(elapsed / 1000)}s`
+          );
+        }
+      } else if (seen) {
+        return "dismissed";
       }
       await page.waitForTimeout(2000);
     }
-    if (!complete) {
-      throw new Error(`The dashboard did not finish uploading ${name} within ${Math.round(timeout / 1000)}s`);
-    }
-    log(`  Upload completed`);
+    return "timeout";
+  }
 
-    log("Verifying upload…");
-    const details = await this.goto(this.detailsUrl(key), log);
-    const shown = (await mainText(details))
-      .split("\n")
-      .map((line) => parseSize(line))
-      .filter((size): size is number => size !== undefined);
+  /**
+   * The bucket is the arbiter: the folder listing either holds the object at
+   * the right size or it does not. Deliberately the listing and not the
+   * object's own page — that page is unreliable for longer keys, while the
+   * listing is the same view `list` already reads for every transfer.
+   * Retried briefly, since a large upload can take a moment to appear.
+   */
+  private async confirmStored(
+    name: string,
+    expected: number,
+    panel: "done" | "dismissed" | "timeout",
+    log: Logger
+  ): Promise<void> {
     // Sizes are shown to two decimals, so allow a rounding margin.
-    const tolerance = Math.max(10_000, data.length * 0.001);
-    if (!shown.some((size) => Math.abs(size - data.length) <= tolerance)) {
-      throw new Error(
-        `Size mismatch! Expected ${data.length} bytes for ${key}; the dashboard shows ${shown.join(", ") || "no size"}`
-      );
+    const tolerance = Math.max(10_000, expected * 0.001);
+    const quiet: Logger = () => {};
+    let reason = `it is not in ${this.prefix || "the bucket"}`;
+
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      // Read the folder afresh, from the bucket page inwards. Listing the
+      // same page that just uploaded can show the dashboard's own optimistic
+      // view of what it is still writing, which is how a stored-nothing
+      // upload once passed verification.
+      const page = await this.open(quiet);
+      await page.goto(this.bucketUrl, { waitUntil: "domcontentloaded" }).catch(() => undefined);
+      await page.waitForTimeout(2000);
+
+      const stored = await this.list(attempt === 1 ? log : quiet).catch(() => []);
+      const found = stored.find((zip) => zip.name === name);
+      if (found) {
+        if (Math.abs(found.size - expected) <= tolerance) {
+          log(`  ✓ Size matches!`);
+          return;
+        }
+        reason = `it is there at about ${found.size} bytes, not ${expected}`;
+      }
+      if (attempt < 3) {
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+      }
     }
-    log(`  ✓ Size matches!`);
-    return key;
+
+    throw new Error(
+      `The bucket does not have ${this.prefix}${name} at the expected size — ${reason}.${
+        panel === "timeout" ? " The upload was still running when the wait ran out." : ""
+      }`
+    );
   }
 
   /**
